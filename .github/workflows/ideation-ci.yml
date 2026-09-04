@@ -1,0 +1,26 @@
+# mock output is not evidence — never upload or commit anything generated here (CLAUDE.md: Evidence discipline)
+name: ideation-ci
+
+on:
+  push:
+    paths:
+      - "ideation/**"
+      - ".github/workflows/ideation-ci.yml"
+  pull_request:
+    paths:
+      - "ideation/**"
+      - ".github/workflows/ideation-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e "ideation[dev]"
+      - run: pytest ideation/tests -q

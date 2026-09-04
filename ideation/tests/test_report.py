@@ -1,0 +1,238 @@
+"""Markdown / JSON rendering of results (DESIGN §12)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from ideate.models import (
+    Alternative,
+    Chunk,
+    CriterionScore,
+    HackathonConstraints,
+    Idea,
+    IdeaEvaluation,
+    IdeationResult,
+    PanelVerdict,
+    Proposal,
+    ResearchFindings,
+    RetrievedChunk,
+    TraceStep,
+)
+from ideate.report import (
+    PLACEHOLDER_BANNER,
+    judgement_dict,
+    render_json,
+    render_judgement,
+    render_markdown,
+    render_ranking_table,
+)
+
+BANNER_LINE = "> **PROVIDER: mock — placeholder content, not evidence**"
+SECTION_HEADINGS = [
+    "## 1. Build this",
+    "## 2. First hour",
+    "## 3. Plan",
+    "## 4. Human dependencies",
+    "## 5. Runner-ups",
+    "## 6. All ideas",
+    "## 7. Idea details",
+    "## 8. Knowledge gaps and sources cited",
+    "## 9. Trace summary",
+]
+
+
+def make_idea(n: int, technique: str) -> Idea:
+    return Idea(
+        title=f"Idea {n}",
+        description=f"Description {n}",
+        id=f"idea-1-{n}",
+        one_liner=f"One liner {n}",
+        target_user=f"a nurse on shift {n}",
+        demo_moment=f"the map lights up {n}",
+        technique=technique,
+        data_sources=[f"source {n} — access: none — data"],
+        citations=["doc#0"] if n == 1 else ["doc#1"],
+        closest_existing=f"Existing {n}",
+        build_hours_estimate=10 + n,
+    )
+
+
+def make_verdict(idea_id: str, weighted: float, feasibility: float, disqualified: bool = False) -> PanelVerdict:
+    consensus = IdeaEvaluation(
+        idea_id=idea_id,
+        scores=[CriterionScore("novelty", 4.0), CriterionScore("feasibility", feasibility)],
+        weighted_score=weighted,
+        strengths=["clear user"],
+        weaknesses=["thin demo"],
+        suggestions=["record a fallback"],
+        disqualified=disqualified,
+        disqualify_reason="needs an account" if disqualified else "",
+        judge="consensus",
+    )
+    return PanelVerdict(idea_id=idea_id, evaluations=[consensus], consensus=consensus, agreement=0.9)
+
+
+@pytest.fixture
+def result() -> IdeationResult:
+    ideas = [make_idea(1, "analogical"), make_idea(2, "reverse"), make_idea(3, "scale")]
+    chunk = Chunk(id="doc#0", doc_id="doc", text="snippet", position=0, metadata={"title": "Doc title", "kind": "guidance", "source": "https://example.org"})
+    return IdeationResult(
+        run_id="abc123",
+        created_at="2026-01-02T03:04:05+00:00",
+        version="0.1.0",
+        theme="AI for climate resilience",
+        constraints=HackathonConstraints(hours=36, team_size=4),
+        provider="mock",
+        model="mock-1",
+        knowledge=[RetrievedChunk(chunk=chunk, score=0.5)],
+        research=ResearchFindings(trends=["t"], citations=["doc#0", "missing#9"], coverage_gaps=["no evidence on flood sensors"]),
+        ideas=ideas,
+        verdicts=[make_verdict("idea-1-1", 4.2, 4.0), make_verdict("idea-1-2", 3.9, 3.0), make_verdict("idea-1-3", 2.1, 1.0, disqualified=True)],
+        ranking=["idea-1-2", "idea-1-1", "idea-1-3"],
+        proposal=Proposal(
+            idea_id="idea-1-2",
+            why_this="it demos in 60 seconds",
+            first_hour_plan=["create repo and push", "confirm public URL"],
+            milestones=["h9 walking skeleton"],
+            team_split=["A: integration owner", "B: demo owner"],
+            cut_list=["auth"],
+            pivot_trigger="no public URL by hour 9",
+            human_dependencies=["do-it-myself: create the API key"],
+            alternatives=[Alternative(idea_id="idea-1-1", choose_if="the flood data is offline")],
+        ),
+        iterations=1,
+        retrieval_rounds=1,
+        coverage_gaps=["no evidence on flood sensors"],
+        trace=[
+            TraceStep(agent="orchestrator", provider="mock", model="mock-1", input_tokens=10, output_tokens=5, duration_ms=3, stop_reason="end_turn"),
+            TraceStep(agent="research", provider="mock", model="mock-1", input_tokens=20, output_tokens=7, duration_ms=4, error="LLMBadOutput: x"),
+        ],
+        is_placeholder=True,
+    )
+
+
+def test_markdown_first_line_is_banner_then_blank(result):
+    lines = render_markdown(result).splitlines()
+    assert lines[0] == BANNER_LINE and lines[0] == f"> **{PLACEHOLDER_BANNER}**"
+    assert lines[1] == ""
+    assert lines[2] == "# Ideation report: AI for climate resilience"
+
+
+def test_markdown_without_banner_for_real_provider(result):
+    result.is_placeholder = False
+    result.provider = "anthropic"
+    md = render_markdown(result)
+    assert PLACEHOLDER_BANNER not in md
+    assert md.splitlines()[0] == "# Ideation report: AI for climate resilience"
+
+
+def test_sections_in_order(result):
+    md = render_markdown(result)
+    positions = [md.index(h) for h in SECTION_HEADINGS]
+    assert positions == sorted(positions)
+
+
+def test_build_this_section_uses_top_ranked_idea(result):
+    md = render_markdown(result)
+    build = md[md.index("## 1. Build this"): md.index("## 2. First hour")]
+    assert "**Idea 2** (idea-1-2)" in build
+    assert "- One-liner: One liner 2" in build
+    assert "- Target user: a nurse on shift 2" in build
+    assert "- Demo moment: the map lights up 2" in build
+    assert "- Why this: it demos in 60 seconds" in build
+    assert "- Closest existing: Existing 2" in build
+
+
+def test_first_hour_numbered_and_plan_sections(result):
+    md = render_markdown(result)
+    assert "1. create repo and push\n2. confirm public URL" in md
+    assert "- h9 walking skeleton" in md and "- A: integration owner" in md and "- auth" in md
+    assert "- no public URL by hour 9" in md
+    assert "- do-it-myself: create the API key" in md
+
+
+def test_runner_ups_choose_instead_if(result):
+    md = render_markdown(result)
+    section = md[md.index("## 5. Runner-ups"): md.index("## 6. All ideas")]
+    assert "**Idea 1** (idea-1-1) — choose instead if the flood data is offline" in section
+    assert "**Idea 3** (idea-1-3) — choose instead if" in section
+
+
+def test_all_ideas_table_in_ranking_order(result):
+    table = render_ranking_table(result.ideas, result.verdicts, result.ranking).splitlines()
+    assert table[0].startswith("| # | Idea | Technique | Weighted | Feasibility | Agreement | Disqualified |")
+    rows = table[2:]
+    assert [r.split("|")[2].strip() for r in rows] == ["Idea 2 (idea-1-2)", "Idea 1 (idea-1-1)", "Idea 3 (idea-1-3)"]
+    assert rows[0].split("|")[3:8] == [" reverse ", " 3.90 ", " 3.0 ", " 0.90 ", " no "]
+    assert rows[2].split("|")[7].strip() == "yes"
+    assert render_ranking_table(result.ideas, result.verdicts, result.ranking) in render_markdown(result)
+
+
+def test_table_handles_unjudged_ideas():
+    ideas = [make_idea(1, "direct")]
+    rows = render_ranking_table(ideas, [], []).splitlines()
+    assert rows[2] == "| 1 | Idea 1 (idea-1-1) | direct | - | - | - | - |"
+
+
+def test_per_idea_detail_and_consensus(result):
+    md = render_markdown(result)
+    details = md[md.index("## 7. Idea details"): md.index("## 8. Knowledge gaps")]
+    assert details.index("### idea-1-2: Idea 2") < details.index("### idea-1-1: Idea 1") < details.index("### idea-1-3: Idea 3")
+    assert "- Weighted score: 2.10 (novelty 4.0, feasibility 1.0)" in details
+    assert "- Disqualified: needs an account" in details
+    assert "- Weaknesses: thin demo" in details and "- Citations: `doc#0`" in details
+
+
+def test_knowledge_gaps_and_sources(result):
+    md = render_markdown(result)
+    section = md[md.index("## 8. Knowledge gaps"): md.index("## 9. Trace summary")]
+    assert "- no evidence on flood sensors" in section
+    assert "- `doc#0` — Doc title (guidance) — https://example.org" in section
+    assert "- `missing#9`" in section and "- `doc#1`" in section
+    assert section.index("`doc#0`") < section.index("`missing#9`") < section.index("`doc#1`")
+
+
+def test_trace_summary(result):
+    md = render_markdown(result)
+    section = md[md.index("## 9. Trace summary"):]
+    assert "- Calls: 2 (1 failed)" in section
+    assert "- Tokens: 30 in / 12 out" in section
+    assert "- Served models: mock/mock-1" in section
+    assert "| research | mock/mock-1 | 20 | 7 | 4 | error: LLMBadOutput: x |" in section
+
+
+def test_markdown_survives_an_empty_result():
+    empty = IdeationResult(run_id="r", created_at="t", version="0.1.0", theme="x", constraints=HackathonConstraints(), provider="mock", model="mock-1", is_placeholder=True)
+    md = render_markdown(empty)
+    assert md.splitlines()[0] == BANNER_LINE
+    assert all(h in md for h in SECTION_HEADINGS)
+    assert "- No idea was ranked." in md and "- Calls: 0 (0 failed)" in md
+    assert md.endswith("\n") and not md.endswith("\n\n")
+
+
+def test_render_json_sorted_with_placeholder_notice(result):
+    text = render_json(result)
+    data = json.loads(text)
+    assert data["placeholder_notice"] == PLACEHOLDER_BANNER
+    assert data["run_id"] == "abc123" and data["ranking"] == ["idea-1-2", "idea-1-1", "idea-1-3"]
+    assert text == json.dumps(data, indent=2, sort_keys=True)
+    assert IdeationResult.from_dict(data).to_dict() == result.to_dict()
+
+
+def test_render_json_without_notice_for_real_provider(result):
+    result.is_placeholder = False
+    data = json.loads(render_json(result))
+    assert "placeholder_notice" not in data and data["is_placeholder"] is False
+
+
+def test_render_judgement_and_dict(result):
+    md = render_judgement(result.ideas, result.verdicts, result.ranking, True)
+    assert md.splitlines()[0] == BANNER_LINE and "# Judgement" in md
+    assert "| 1 | Idea 2 (idea-1-2) |" in md and "### idea-1-2: Idea 2" in md
+    assert PLACEHOLDER_BANNER not in render_judgement(result.ideas, result.verdicts, result.ranking, False)
+    d = judgement_dict(result.ideas, result.verdicts, result.ranking, True)
+    assert d["ranking"] == result.ranking and d["placeholder_notice"] == PLACEHOLDER_BANNER
+    assert [v["idea_id"] for v in d["verdicts"]] == ["idea-1-1", "idea-1-2", "idea-1-3"]
+    assert "placeholder_notice" not in judgement_dict(result.ideas, result.verdicts, result.ranking, False)

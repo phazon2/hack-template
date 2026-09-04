@@ -1,0 +1,132 @@
+# Roadmap
+
+The system was specified in six phases. This page maps each phase to what the baseline
+(`0.1.0`, see `DESIGN.md`) implements, what is deliberately deferred, and the seam — the
+Protocol, function or file — a later change should plug into so nothing above it has to
+move. The ordering principle of the baseline was: make every stage real, in-repo and
+testable without tokens first; swap in heavier backends behind the same interfaces later.
+
+## Phase 1 — Knowledge repository
+
+**Baseline.** A bundled corpus of twelve hand-written documents (`src/ideate/corpus/`):
+judging criteria, demo strategy, 24h/48h scoping, failure modes, deploy-and-webhooks, pitch
+structure, ideation techniques, team roles, AI-agent project patterns, a `data-source` list of
+free public APIs and datasets with their access level, project archetypes and generic-idea
+antipatterns. A front-matter loader (`knowledge/loaders.py`) reads `.md`/`.txt`/`.json`/
+`.jsonl` from the bundled directory plus any `IDEATE_CORPUS_DIRS` / `--corpus` directories,
+with kinds `guidance | data-source | archetype | antipattern | event | evidence`. Event
+material dropped into `corpus/event/` with `kind: event` is pinned into every run. The index
+is saved to disk with a corpus fingerprint and rebuilt automatically when the corpus or the
+chunk/embedder settings change. Content discipline is tested: no invented statistics, no fake
+case studies, every paragraph fits the chunker.
+
+**Deferred.**
+- *Automated ingestion (arXiv, Devpost, event pages, sponsor docs, the web).* Seam:
+  `loaders.load_corpus(dirs) -> list[Document]`. A fetcher only has to write markdown with
+  front matter into a corpus directory (`kind: evidence` with a required `source`) — nothing
+  downstream changes. Keep fetchers out of the core package so it stays stdlib-only.
+- *Larger corpora.* The BM25 and vector stores are in-memory JSON; past a few thousand
+  chunks, replace `VectorStore` (same `add`/`search`/`to_dict`) with an ANN index and keep
+  `KnowledgeBase.save`/`load` as the persistence contract.
+
+## Phase 2 — Agentic RAG: hybrid search, reranking, corrective RAG
+
+**Baseline.** BM25 (`knowledge/bm25.py`) and a hashing embedder (`knowledge/embeddings.py`:
+unigrams, bigrams, char 3-grams, tf-idf weighted, L2-normalised, 512 dimensions) fused with
+reciprocal rank fusion (`knowledge/fusion.py`), then a reranker: `LexicalOverlapReranker`
+(free), `LLMReranker` (one call per query) or none. `HybridRetriever`/`KnowledgeBase`
+(`knowledge/retriever.py`) support kind-filtered exhaustive search, which the orchestrator
+uses to pin `event` and `data-source` chunks. Corrective RAG is the graph loop `research ->
+retrieve_more -> research`: the research agent must list `coverage_gaps` instead of
+inventing evidence, `RetrieveMoreAgent` retrieves each gap, and the loop repeats while new
+chunks arrive, bounded by `IDEATE_MAX_RETRIEVAL_ROUNDS`. Every retrieval query issued is
+recorded on the result (`queries`), and every chunk carries per-stage ranks and scores.
+
+**Deferred.**
+- *Real embeddings (e.g. Voyage).* Seam: the `Embedder` Protocol (`name`, `dim`, `fit`,
+  `embed`, `to_dict`). Add a class, register its name in `embedder_from_dict`, and relax the
+  `hashing`/dim check in `pipeline.IdeationSystem._try_load`. An embedding API is a
+  credential like any other: resolve it by presence, never read the value, and keep the
+  hashing embedder as the tokenless default so tests stay offline.
+- *Cross-encoder reranker.* Seam: the `Reranker` Protocol (`rerank(query, candidates,
+  top_n)`). Add a third `IDEATE_RERANKER` name beside `lexical`/`llm`.
+- *Graph RAG / adaptive RAG (query routing, self-reflection on retrieved chunks).* Seam: the
+  `Retriever` Protocol for the store, and a new `Agent` in place of `RetrieveMoreAgent` for
+  the control flow — `Graph.add_conditional_edge` already expresses "retrieve again / move
+  on" as a closure over the state.
+
+## Phase 3 — Multi-agent system
+
+**Baseline.** A small in-repo graph runtime (`agents/graph.py`: nodes, plain edges,
+conditional edges as closures over `Settings`, `END`, `max_steps`, verbose tracing) running
+seven agents (`orchestrator`, `research`, `retrieve_more`, `domain_expert`, `creativity`,
+`evaluator`, `synthesizer`) over one mutable `IdeationState`. Every LLM call goes through
+`TracingLLM` and lands in the trace with a canonical tag, requested and served model, tokens,
+duration and request id. Structured outputs are enforced by JSON schema on both providers
+with one corrective retry; id references are enum-bound so the model cannot cite a chunk or
+idea that was not shown.
+
+**Deferred.**
+- *LangGraph swap-in.* Seam: `Agent.run(state, ctx) -> state` is already a pure node
+  function and `build_default_graph` is the only place edges are declared; the two
+  conditional closures map one-to-one onto LangGraph conditional edges. Keep `TracingLLM`
+  and `RunContext` — they are what make the trace and the query log provider-independent.
+- *Parallel judges / streaming progress.* The persona calls in `PanelJudge.evaluate_many`
+  are independent and can fan out; the trace must stay ordered by `started_at`.
+
+## Phase 4 — LLM-as-judge evaluation
+
+**Baseline.** A rubric with 1/3/5 anchors per criterion (`evaluation/rubric.py`; the default
+weights novelty .30, feasibility .25, impact .25, demoability .20), built from the event's
+own criteria strings (`--criteria "innovation:40,impact:30,demo:30"`) with feasibility
+always present. A panel of persona judges (`evaluation/judge.py`) scores every idea in one
+batched call per persona; consensus is the per-criterion median, `agreement` measures panel
+spread, disqualification needs a majority, and ranking is tiered (feasible first,
+infeasible second, disqualified last). `ideate judge` exposes the panel on any list of ideas.
+
+**Deferred.**
+- *Calibration sets.* A labelled set of ideas with human scores per criterion, run through
+  `PanelJudge.evaluate_many`, comparing consensus to the human labels and per-persona
+  variance via `scoring.agreement`. Seam: a `tests/calibration/` fixture plus an `ideate
+  eval` subcommand (Phase 5) — no judge code needs to change.
+- *Position-bias controls and pairwise comparison.* Seam: `LLMJudge.evaluate_many` receives
+  the batch; shuffle order per persona there and re-map by `idea_id`.
+
+## Phase 5 — Iterative improvement
+
+**Baseline.** Two feedback loops. Inside a run: the evaluator writes critiques (consensus
+weaknesses and the lowest criterion of each top-3 idea) and, while fewer than
+`IDEATE_MIN_STRONG_IDEAS` ideas clear `IDEATE_ACCEPT_THRESHOLD`, the creativity agent runs
+again with the top-3 ideas and critiques, refining half (`parent_id`) and inventing half.
+Across events: `ideate learn` records an `Outcome` and distils `success`/`failure` patterns
+into `memory.jsonl` (`improvement/feedback.py`, `memory/store.py`); the next run injects the
+relevant patterns as leverage/avoid bullets into the orchestrator and as `memory` chunks
+into the knowledge base. Patterns learned under the mock are quarantined.
+
+**Deferred.**
+- *`ideate eval` benchmarks keyed by run_id and version.* Every `result.json` already
+  carries `run_id`, `version`, `settings`, `provider`, served models and the full trace, so a
+  benchmark is a fixed list of themes and constraints, run under a named settings set,
+  stored under `.ideate/evals/<version>/`, and compared on ranking stability, judge
+  agreement, validation-retry rate, tokens and duration. Seam: `IdeationSystem.ideate` +
+  `pipeline.load_result`; the mock makes the harness testable, but only real-provider runs
+  are evidence.
+- *Pattern decay and pruning; multi-user memory.* Seam: `MemoryStore` (JSONL, one record per
+  line) — replace the file with a shared store behind the same methods.
+
+## Phase 6 — Integration
+
+**Baseline.** The `ideate` CLI (`index`, `run`, `judge`, `learn`, `memory`, `probe`),
+markdown and JSON reports with a placeholder watermark under the mock, run directories,
+probe receipts that can only come from a real provider, three blocker kinds mapped to exit
+codes, a Claude Code skill (`.claude/skills/ideate/SKILL.md`) and a CI workflow that runs
+the test matrix and writes nothing.
+
+**Deferred.**
+- *Web UI.* Seam: the `IdeationSystem` facade and `report.render_json`; a UI is a thin
+  client over `ideate(...)` / `judge(...)` / `learn(...)` and the saved `result.json` files.
+- *MCP server or GitHub Action entry points.* Same seam; keep credentials out of the tool
+  exactly as the CLI does (presence only, `do-it-myself` when missing).
+- *Live-endpoint validation of `AnthropicLLM`.* Not a code change: run `ideate probe` the
+  day credentials exist, keep the receipt, then run the suite of scripted-mock cases against
+  the real endpoint once and record what differed.
