@@ -63,7 +63,7 @@ def test_make_llm_mock_uses_seed_and_prints_one_stderr_line(clean_env, capsys):
 
 
 def test_make_llm_anthropic_passes_settings_and_never_falls_back(clean_env, monkeypatch, capsys):
-    import anthropic
+    anthropic = pytest.importorskip("anthropic", reason="anthropic SDK not installed")
 
     built = {}
 
@@ -99,7 +99,7 @@ def test_make_llm_unknown_provider(clean_env):
 
 
 def test_default_settings_with_credential_present_builds_anthropic(clean_env, monkeypatch, capsys):
-    import anthropic
+    anthropic = pytest.importorskip("anthropic", reason="anthropic SDK not installed")
 
     monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: object())
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "")

@@ -22,5 +22,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e "ideation[dev]"
+      - run: pip install -e "ideation[dev,anthropic]"  # SDK for the fake-client provider tests; no test makes a real call
       - run: pytest ideation/tests -q

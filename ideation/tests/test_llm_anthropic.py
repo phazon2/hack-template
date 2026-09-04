@@ -7,11 +7,17 @@ import json
 import sys
 from types import SimpleNamespace
 
-import httpx2
 import pytest
 
-import anthropic
-from ideate.llm.anthropic_provider import FALLBACK_BETA, FORBIDDEN_KWARGS, AnthropicLLM
+anthropic = pytest.importorskip("anthropic", reason="anthropic SDK not installed (pip install \"ideate[anthropic]\")")
+httpx2 = pytest.importorskip("httpx2", reason="httpx2 (anthropic dependency) not installed")
+from ideate.llm.anthropic_provider import (
+    CREDENTIALS_HINT,
+    FALLBACK_BETA,
+    FORBIDDEN_KWARGS,
+    AnthropicLLM,
+    is_missing_credentials,
+)
 from ideate.llm.base import LLM, LLMBadOutput, LLMConfigError, LLMRefusal, LLMRequest, LLMTransientError
 from ideate.llm.schema import arr, enum, int_, num, obj, str_
 
@@ -332,4 +338,38 @@ def test_transient_error_is_not_retried_by_validation_policy():
 def test_non_sdk_exceptions_propagate_unchanged():
     provider, _ = llm(RuntimeError("boom"))
     with pytest.raises(RuntimeError):
+        provider.complete(req())
+
+
+# --------------------------------------------------------------------------- missing credentials (plain TypeError from the SDK)
+SDK_NO_CREDENTIALS_MESSAGE = (
+    '"Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set. '
+    'Or for one of the `X-Api-Key` or `Authorization` headers to be explicitly omitted"'
+)
+
+
+def test_missing_credentials_typeerror_is_a_do_it_myself_blocker():
+    err = TypeError(SDK_NO_CREDENTIALS_MESSAGE)
+    err._raise_on_stream = True  # the SDK raises while building the request, before any I/O
+    provider, client = llm(err)
+    with pytest.raises(LLMConfigError) as ei:
+        provider.complete(req())
+    assert ei.value.kind == "do-it-myself"
+    assert ei.value.hint == CREDENTIALS_HINT
+    assert ei.value.message == "no Anthropic credentials found: the SDK could not resolve an authentication method"
+    assert len(client.calls) == 1  # never retried
+
+
+def test_missing_credentials_predicate_and_translate():
+    assert is_missing_credentials(TypeError(SDK_NO_CREDENTIALS_MESSAGE))
+    assert not is_missing_credentials(TypeError("unexpected keyword argument 'foo'"))
+    assert not is_missing_credentials(RuntimeError(SDK_NO_CREDENTIALS_MESSAGE))
+    provider, _ = llm()
+    mapped = provider._translate(TypeError(SDK_NO_CREDENTIALS_MESSAGE))
+    assert isinstance(mapped, LLMConfigError) and mapped.kind == "do-it-myself" and mapped.hint == CREDENTIALS_HINT
+
+
+def test_unrelated_typeerror_propagates_unchanged():
+    provider, _ = llm(TypeError("unexpected keyword argument 'foo'"))
+    with pytest.raises(TypeError, match="unexpected keyword"):
         provider.complete(req())

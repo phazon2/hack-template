@@ -14,6 +14,12 @@ from ideate.llm.schema import for_api
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 CREDENTIALS_HINT = "set ANTHROPIC_API_KEY (or log in with the Anthropic CLI); ideate never prompts for or stores a key"
 FORBIDDEN_KWARGS = ("temperature", "top_p", "top_k", "thinking")
+MISSING_CREDENTIALS_MARKER = "could not resolve authentication method"
+
+
+def is_missing_credentials(exc: BaseException) -> bool:
+    """True for the plain TypeError the SDK raises at request time when it finds no credentials at all."""
+    return isinstance(exc, TypeError) and MISSING_CREDENTIALS_MARKER in str(exc).lower()
 
 
 class AnthropicLLM:
@@ -63,6 +69,10 @@ class AnthropicLLM:
                 message = stream.get_final_message()
         except self._sdk.AnthropicError as e:
             raise self._translate(e) from e
+        except TypeError as e:
+            if not is_missing_credentials(e):
+                raise
+            raise self._translate(e) from e
         if message.stop_reason == "refusal":
             details = getattr(message, "stop_details", None)
             raise LLMRefusal(getattr(details, "category", None), getattr(details, "explanation", None))
@@ -89,8 +99,14 @@ class AnthropicLLM:
         )
 
     def _translate(self, e: Exception) -> LLMError:
-        """Map an SDK exception to the ideate error taxonomy (most specific first)."""
+        """Map an SDK exception (or its missing-credentials TypeError) to the ideate taxonomy, most specific first."""
         sdk = self._sdk
+        if is_missing_credentials(e):
+            return LLMConfigError(
+                "no Anthropic credentials found: the SDK could not resolve an authentication method",
+                kind="do-it-myself",
+                hint=CREDENTIALS_HINT,
+            )
         if isinstance(e, sdk.AuthenticationError):
             return LLMConfigError(f"authentication failed: {e}", kind="do-it-myself", hint=CREDENTIALS_HINT)
         if isinstance(e, sdk.PermissionDeniedError):

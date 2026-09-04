@@ -232,3 +232,32 @@ def test_run_dir_is_created_under_runs_dir_from_env(cli_env, tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "nested" / "result.json").exists()
     assert run_dirs(cli_env)[0].parent == Path(cli_env["IDEATE_RUNS_DIR"])
+
+
+# --------------------------------------------------------------------------- probe without credentials (in-process, no network)
+class _NoCredentialsClient:
+    """Fake SDK client whose request build raises the SDK's missing-credentials TypeError (no I/O ever happens)."""
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self._stream))
+
+    def _stream(self, **kwargs):
+        raise TypeError('"Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set."')
+
+
+def test_probe_without_credentials_is_a_do_it_myself_blocker(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("anthropic", reason="anthropic SDK not installed")
+    import ideate.pipeline as pipeline
+    from ideate.llm.anthropic_provider import CREDENTIALS_HINT, AnthropicLLM
+
+    monkeypatch.setenv("IDEATE_RECEIPTS_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setattr(pipeline, "make_llm", lambda settings: AnthropicLLM(settings.model, client=_NoCredentialsClient()))
+    assert main(["probe", "--provider", "anthropic"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.splitlines()
+    assert lines[-2] == "blocker (do-it-myself): no Anthropic credentials found: the SDK could not resolve an authentication method"
+    assert lines[-1] == f"  fix: {CREDENTIALS_HINT}"
+    assert not (tmp_path / "receipts").exists()

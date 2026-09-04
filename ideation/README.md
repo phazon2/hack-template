@@ -159,11 +159,11 @@ keywords never reach the API, that refusals, `max_tokens` truncation and a leadi
 `fallback` content block are handled, and that SDK exceptions map to the blocker kinds
 below. It has **not** yet been exercised against a live endpoint. The probe is that
 exercise: run it first, keep the receipt, and only then trust a full run. If the probe fails,
-the stderr line tells you which of the three blocker kinds you are looking at. One rough edge
-to know about: with the SDK installed and no credentials at all, the SDK currently raises a
-plain `TypeError: Could not resolve authentication method ...` from inside the request
-rather than an `AuthenticationError`, so you get a traceback and exit 1 instead of the
-`blocker (do-it-myself)` line — it means the same thing: set the key, or log in, yourself.
+the stderr line tells you which of the three blocker kinds you are looking at. With the SDK
+installed and no credentials at all, the SDK raises a plain `TypeError` ("Could not resolve
+authentication method") from inside the request rather than an `AuthenticationError`; ideate
+maps it to the same `blocker (do-it-myself)` line and exit code 2 — set the key, or log in,
+yourself.
 
 ## Evidence discipline
 
@@ -504,11 +504,13 @@ sets for ordered output, ranked outputs sort by `(-score, id)`, wall-clock via a
 ## Tests
 
 ```bash
-pip install -e "ideation[dev]"
-pytest ideation/tests -q          # what CI runs: 371 tests, ~15 s, no network, mock only
+pip install -e "ideation[dev,anthropic]"
+pytest ideation/tests -q          # what CI runs: 375 tests, ~15 s, no network, mock only
 ```
 
-Or without installing: `cd ideation && PYTHONPATH=src python -m pytest -q`. The suite covers
+Or without installing: `cd ideation && PYTHONPATH=src python -m pytest -q`. The `anthropic`
+extra only serves the fake-client provider tests (no test makes a real call); without the SDK
+those tests are skipped, not failed. The suite covers
 every module plus the end-to-end path under the mock (E2E shape, placeholder banner,
 canonical trace tags), the Anthropic provider against a fake client (kwarg names checked
 against the installed SDK signature, exception mapping via real SDK exception objects), and
