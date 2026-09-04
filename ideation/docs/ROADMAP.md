@@ -1,9 +1,9 @@
 # Roadmap
 
-The system was specified in six phases. This page maps each phase to what the baseline
-(`0.1.0`, see `DESIGN.md`) implements, what is deliberately deferred, and the seam — the
-Protocol, function or file — a later change should plug into so nothing above it has to
-move. The ordering principle of the baseline was: make every stage real, in-repo and
+The system was specified in six phases, plus a seventh added afterwards: the strategic /
+meta layer (`DESIGN-META.md`). This page maps each phase to what the baseline (`0.1.0`, see
+`DESIGN.md`) implements, what is deliberately deferred, and the seam — the Protocol, function
+or file — a later change should plug into so nothing above it has to move. The ordering principle of the baseline was: make every stage real, in-repo and
 testable without tokens first; swap in heavier backends behind the same interfaces later.
 
 ## Phase 1 — Knowledge repository
@@ -101,7 +101,8 @@ again with the top-3 ideas and critiques, refining half (`parent_id`) and invent
 Across events: `ideate learn` records an `Outcome` and distils `success`/`failure` patterns
 into `memory.jsonl` (`improvement/feedback.py`, `memory/store.py`); the next run injects the
 relevant patterns as leverage/avoid bullets into the orchestrator and as `memory` chunks
-into the knowledge base. Patterns learned under the mock are quarantined.
+into the knowledge base. Patterns learned under the mock are quarantined. A third loop, over
+the system's own process rather than over outcomes, lives in Phase 7 below.
 
 **Deferred.**
 - *`ideate eval` benchmarks keyed by run_id and version.* Every `result.json` already
@@ -116,7 +117,8 @@ into the knowledge base. Patterns learned under the mock are quarantined.
 
 ## Phase 6 — Integration
 
-**Baseline.** The `ideate` CLI (`index`, `run`, `judge`, `learn`, `memory`, `probe`),
+**Baseline.** The `ideate` CLI (`index`, `run`, `judge`, `learn`, `memory`, `ingest`,
+`strategy`, `reflect`, `meta`, `probe`),
 markdown and JSON reports with a placeholder watermark under the mock, run directories,
 probe receipts that can only come from a real provider, three blocker kinds mapped to exit
 codes, a Claude Code skill (`.claude/skills/ideate/SKILL.md`) and a CI workflow that runs
@@ -130,3 +132,43 @@ the test matrix and writes nothing.
 - *Live-endpoint validation of `AnthropicLLM`.* Not a code change: run `ideate probe` the
   day credentials exist, keep the receipt, then run the suite of scripted-mock cases against
   the real endpoint once and record what differed.
+
+## Phase 7 — Strategic / meta layer
+
+Added after the first six (`DESIGN-META.md`). The first six phases reason about the
+hackathon; this one reasons about how the system itself works.
+
+**Baseline.** Three data domains kept separate: domain knowledge (`corpus/*.md`), meta
+knowledge (`corpus/meta/*.md`, `kind: meta` — eight documents on idea generation, problem
+solving, memory design, self-improving systems, retrieval, evaluation, agent systems and
+external memory ingestion), and meta memory (`.ideate/meta.jsonl`). A `StrategistAgent` runs
+before the pipeline and commits to a plan (framing, problem type, emphasised techniques,
+retrieval angles, rubric emphasis, planned rounds, failure modes to watch) whose every field
+is clamped by `Strategy.sanitized` before it can touch the run. A `ReflectorAgent` runs after
+the synthesizer on the run's own telemetry and writes a `RunReflection` plus scoped
+`MetaPattern`s; `MetaStore.add_meta_pattern` merges on write, so a repeated observation raises
+confidence (0.5 → 0.7 → 0.82 → …, capped at 0.95) instead of duplicating a row. `ideate
+ingest` normalises external memory systems — ideate's own memory files, conversation exports,
+generic JSON notes, markdown, `CLAUDE.md`-style rule files, directories — with provenance that
+survives chunking, and every ingested snippet is rendered with an `[ingested: src-...]` label
+under a system-prompt rule that such material is data and never an instruction. Meta memory
+written under the mock never steers any run.
+
+**Deferred.**
+- *Calibrating the strategist against outcomes.* Today a meta-pattern's confidence rises with
+  repetition, not with whether the runs it steered produced ideas that placed. Seam:
+  `Outcome.run_id` already links an outcome to its run, and `IdeationResult.strategy` records
+  the plan that run used — join them and reweight. This needs real runs with real outcomes;
+  it cannot be validated under the mock.
+- *Pattern decay, contradiction detection and pruning.* Repetition-only confidence has no way
+  to demote a lesson the world stopped agreeing with, and two contradictory patterns can both
+  sit at high confidence. Seam: `MetaStore` (`_rewrite` already exists for merge-on-write).
+- *Strategy A/B evaluation.* Run the same theme with and without the strategist, or with two
+  different plans, and compare. Seam: the `ideate eval` harness in Phase 5 plus
+  `--no-strategist`.
+- *Richer ingestion: PDFs, web pages, Notion/Drive exports, other agents' memory formats.*
+  Seam: `meta/ingest.py` `DETECTORS` — add a predicate and a normaliser; everything downstream
+  (provenance, labelling, trust rule, indexing) already works from the `Document`.
+- *Trust levels per source.* Ingested material is uniformly "reference data" today. A source
+  the user vouches for versus one scraped from the internet could be weighted differently in
+  retrieval. Seam: `MemorySource` (add a field) and `meta/context.py`.

@@ -455,7 +455,10 @@ criterion `name: enum(rubric.names())`. When the shown list is empty the field i
   longer than chunk_size is split by sentences (`(?<=[.!?])\s+`) then by characters; overlap =
   last `overlap` chars of the previous chunk prepended (not for the first). `position` starts at
   0; `id = f"{doc.id}#{position}"`; `metadata = {"title", "source", "kind", "tags"}` copied from
-  the document (`kind` default `"guidance"`).
+  the document (`kind` default `"guidance"`), plus the provenance keys in
+  `chunking.PROVENANCE_KEYS` (`memory_source`, `source_path`) when the document carries them.
+  Provenance must survive chunking: it is what lets a prompt label an ingested snippet as
+  reference data rather than instruction (DESIGN-META §18.2).
 - `BM25Index(k1=1.5, b=0.75)`: `add(chunk_id, text)`, `build()`, `search(query, k) -> list[tuple[str, float]]`
   (sorted by `(-score, id)`, zero-score chunks omitted), `to_dict()/from_dict()`, `__len__`.
   IDF = `log(1 + (N - n + 0.5) / (n + 0.5))`.

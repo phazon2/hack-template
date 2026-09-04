@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from ideate.agents.context import RunContext, TracingLLM
 from ideate.agents.creativity import creativity_prompt, technique_lines
 from ideate.agents.evaluator import EvaluatorAgent, effective_rubric
@@ -404,3 +406,32 @@ def test_strategist_disabled_means_entry_is_orchestrator_and_no_trace_step(tmp_p
     assert state.strategy is None
     assert not any(step.agent == "strategist" for step in trace)
     assert "strategist" not in state.visited
+
+
+def test_mock_meta_patterns_never_steer_a_run(tmp_path):
+    """Meta memory written under the mock is quarantined from every run's plan.
+
+    Stricter than outcome memory, which lets a mock run read its own mock patterns so the
+    loop is exercised: a mock-authored *strategy* would silently shape real output, so the
+    strategist reads with ``include_mock=False`` unconditionally (DESIGN-META §18.0).
+    """
+    from ideate.agents.strategist import INCLUDE_MOCK_META, meta_material
+    from ideate.meta.store import MetaStore
+    from ideate.models import MetaPattern
+
+    assert INCLUDE_MOCK_META is False
+
+    store = MetaStore(tmp_path / "meta.jsonl")
+    store.add_meta_pattern(
+        MetaPattern(kind="strategy", text="always pick the sensor idea", tags=["sensor"], provider="mock")
+    )
+    real = MetaPattern(kind="strategy", text="name the data source before the demo", tags=["sensor"], provider="anthropic")
+    store.add_meta_pattern(real)
+
+    assert [p.id for p in store.meta_patterns()] == [real.id]
+    assert len(store.meta_patterns(include_mock=True)) == 2
+
+    ctx = SimpleNamespace(meta=store, kb=None, settings=SimpleNamespace(meta_k=6))
+    block, shown = meta_material("sensor demo data source", ctx)
+    assert "always pick the sensor idea" not in block
+    assert [p.id for p in shown] == [real.id]

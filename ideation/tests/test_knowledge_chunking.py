@@ -48,3 +48,34 @@ def test_overlap_prepends_tail_of_previous_chunk_except_first():
 def test_kind_and_empty_text():
     assert split_document(_doc("hello", kind="event"))[0].metadata["kind"] == "event"
     assert split_document(_doc("   \n\n  ")) == []
+
+
+def test_chunking_preserves_ingestion_provenance():
+    """A chunk from ingested material keeps the source id so prompts can label it (DESIGN-META §18.2)."""
+    from ideate.knowledge.chunking import PROVENANCE_KEYS, split_document
+    from ideate.models import Document
+
+    doc = Document(
+        id="src-abc123__notes",
+        title="Someone else's notes",
+        text="First paragraph about retrieval.\n\nSecond paragraph about demos.",
+        source="/tmp/notes.md",
+        metadata={"kind": "memory-source", "memory_source": "src-abc123", "source_path": "/tmp/notes.md", "tags": ["x"]},
+    )
+    chunks = split_document(doc, chunk_size=200, overlap=0)
+    assert chunks
+    for chunk in chunks:
+        assert chunk.metadata["memory_source"] == "src-abc123"
+        assert chunk.metadata["source_path"] == "/tmp/notes.md"
+    assert PROVENANCE_KEYS == ("memory_source", "source_path")
+
+
+def test_chunking_omits_provenance_for_ordinary_documents():
+    """Corpus documents carry no provenance keys, so ordinary chunks stay unlabelled."""
+    from ideate.knowledge.chunking import split_document
+    from ideate.models import Document
+
+    doc = Document(id="guide", title="Guide", text="A paragraph.", source="corpus", metadata={"kind": "guidance"})
+    chunk = split_document(doc, chunk_size=200, overlap=0)[0]
+    assert "memory_source" not in chunk.metadata
+    assert "source_path" not in chunk.metadata

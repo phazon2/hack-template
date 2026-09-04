@@ -6,6 +6,8 @@ import re
 
 from ideate.models import Chunk, Document
 
+PROVENANCE_KEYS: tuple[str, ...] = ("memory_source", "source_path")
+
 _PARAGRAPH = re.compile(r"\n\s*\n")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
@@ -61,6 +63,12 @@ def split_document(doc: Document, chunk_size: int = 800, overlap: int = 120) -> 
         "kind": doc.metadata.get("kind") or "guidance",
         "tags": list(doc.metadata.get("tags") or []),
     }
+    # Provenance of ingested memory sources must survive chunking: it is what lets a prompt
+    # label the snippet as reference data rather than instruction (docs/DESIGN-META.md §18.2).
+    for key in PROVENANCE_KEYS:
+        value = doc.metadata.get(key)
+        if value:
+            metadata[key] = value
     chunks: list[Chunk] = []
     previous = ""
     for position, core in enumerate(_pack(units, chunk_size)):

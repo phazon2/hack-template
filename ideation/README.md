@@ -19,16 +19,26 @@ without a network. The mock is scaffolding, not evidence: every report it produc
 watermarked, `ideate probe` refuses to run under it, and patterns it "learns" are quarantined
 from real runs. The day you have Anthropic credentials, one environment variable switches the
 provider and nothing else changes. After the event, `ideate learn` records what happened and
-distils leverage/avoid patterns that feed the next run. The core is pure standard library;
-`anthropic` is an optional extra and `pytest` is dev-only. The binding spec is
-[`docs/DESIGN.md`](docs/DESIGN.md); what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+distils leverage/avoid patterns that feed the next run.
+
+On top of that sits a **strategic / meta layer** that reasons about the system's own way of
+working rather than about the hackathon: a strategist plans the approach before the pipeline
+runs, a reflector records what to change afterwards, and `ideate ingest` brings memory systems
+you built elsewhere into the knowledge base as labelled reference data. See
+[Strategic / meta layer](#strategic--meta-layer).
+
+The core is pure standard library; `anthropic` is an optional extra and `pytest` is dev-only.
+The binding specs are [`docs/DESIGN.md`](docs/DESIGN.md) and
+[`docs/DESIGN-META.md`](docs/DESIGN-META.md); what comes next is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   subgraph KB["Knowledge base (src/ideate/corpus + your corpus dirs)"]
-    C["markdown / txt / json docs<br/>kinds: guidance, data-source, archetype,<br/>antipattern, event, evidence"] --> CH["chunker (800 chars, 120 overlap)"]
+    C["markdown / txt / json docs<br/>kinds: guidance, data-source, archetype,<br/>antipattern, event, evidence, meta"] --> CH["chunker (800 chars, 120 overlap)"]
+    I["ingested memory sources<br/>kinds: rules, memory-source"] --> CH
     CH --> B["BM25 index"]
     CH --> V["hashed vectors (512-d)"]
   end
@@ -38,6 +48,7 @@ flowchart LR
     F --> RR["reranker: lexical | llm | none"]
   end
   subgraph AG["Agent graph"]
+    ST["strategist<br/>plans the approach"] --> O
     O["orchestrator<br/>theme to queries, pins event + data-source chunks"] --> RS["research"]
     RS --> RM["retrieve_more<br/>(no LLM)"]
     RM -- "coverage gaps found new chunks" --> RS
@@ -46,10 +57,13 @@ flowchart LR
     CR --> EV["evaluator<br/>panel of 3 persona judges"]
     EV -- "fewer than 3 strong ideas" --> CR
     EV --> SY["synthesizer"]
+    SY --> RF["reflector<br/>reads the run's own telemetry"]
   end
-  RR --> O
-  SY --> P["proposal<br/>report.md + result.json"]
+  RR --> ST
+  RF --> P["proposal<br/>report.md + result.json"]
   P -. "after the event: ideate learn" .-> M[("memory.jsonl<br/>success / failure patterns")]
+  RF -- "reflections + meta-patterns" --> MM[("meta.jsonl<br/>process lessons, ingested sources")]
+  MM -- "what to do differently" --> ST
   M -- "leverage / avoid" --> O
   M -- "memory chunks" --> HR
 ```
@@ -63,6 +77,10 @@ IDEATE_MAX_ITERATIONS`. In round two the creativity agent sees the top-three ide
 consensus weaknesses and suggestions, and refines roughly half of them (`parent_id`) while
 inventing the rest anew. Every LLM call is recorded in the run's trace with its tag, the
 requested and served model, token counts, duration and request id.
+
+The strategist and the reflector are the [strategic / meta layer](#strategic--meta-layer); both
+are optional (`--no-strategist`, `--no-reflector`) and the graph falls back to the baseline
+entry and exit when they are off.
 
 ## Quick start
 
@@ -165,6 +183,81 @@ authentication method") from inside the request rather than an `AuthenticationEr
 maps it to the same `blocker (do-it-myself)` line and exit code 2 — set the key, or log in,
 yourself.
 
+## Strategic / meta layer
+
+The baseline reasons about the hackathon. This layer reasons about **how the system itself
+works** — how it generates ideas, what it should retrieve, how it judges, and what it should
+do differently next time. Three data domains stay separate on purpose:
+
+| Domain | Question it answers | Where it lives |
+|---|---|---|
+| Domain knowledge | How do you win a hackathon? | `corpus/*.md` (`guidance`, `data-source`, `archetype`, `antipattern`, `event`) |
+| Meta knowledge | How do you generate ideas, solve problems, design memory, design agent systems, judge output? | `corpus/meta/*.md` (`kind: meta`), plus ingested `rules` |
+| Meta memory | What has *this* system learned about its own process? | `.ideate/meta.jsonl` |
+
+**The strategist** runs before anything else. It reads the meta corpus, any ingested operating
+rules and the meta-patterns from earlier runs, then commits to a plan: how to frame the
+problem, its problem type, which two to four ideation techniques to emphasise, extra retrieval
+angles, which judging criteria to weight up, what failure modes to watch for, and how many idea
+rounds to plan. Every field is clamped before use — techniques must be real techniques, rubric
+multipliers are held to 0.5–2.0 and renormalised, rounds cannot exceed `max_iterations` — so the
+plan can steer the run but cannot break it. The plan appears at the top of the report, so you
+can see what it decided and why. `--no-strategist` skips it.
+
+**The reflector** runs last, on the run's own telemetry rather than on the ideas: which
+techniques the top-ranked ideas used, where the judge panel disagreed, what the research agent
+could not find, how many ideas were dropped as generic or near-duplicate, and what each agent
+cost in tokens. It writes a reflection plus a handful of meta-patterns scoped either globally or
+to that problem type. Seeing the same lesson again raises that pattern's confidence instead of
+duplicating it (0.5 → 0.7 → 0.82 → …, capped at 0.95). This is the part that learns without
+waiting for a hackathon to end. `--no-reflector` skips it.
+
+```bash
+ideate strategy "AI for grid resilience" --hours 36 --team 4   # just the plan, one call
+ideate reflect --run 64cf433bd7a4                              # reflect on a saved run
+ideate meta                                                    # what the system has learned
+ideate meta --kind pitfall --scope constrained
+```
+
+### Bringing in your own memory systems
+
+`ideate ingest` normalises memory you built elsewhere and registers it as a source with
+provenance:
+
+```bash
+ideate ingest ~/notes/hackathons/            # a directory of markdown
+ideate ingest ./CLAUDE.md                    # rule files -> kind: rules
+ideate ingest ./chat-export.jsonl --reindex  # conversation exports
+ideate ingest ../other-project/.ideate/memory.jsonl --kind ideate
+ideate meta --sources
+```
+
+Formats detected automatically: ideate's own `memory.jsonl`, conversation exports
+(`{role, content}` records), generic JSON/JSONL notes, markdown with or without front matter,
+plain text, `CLAUDE.md`-style rule files, and directories of any of these. Re-ingesting
+unchanged content is a no-op. Ingested material is indexed alongside the corpus and changes the
+index fingerprint, so it becomes retrievable on the next `ideate index` (or immediately with
+`--reindex`).
+
+**Ingested content is data, never instructions.** Every ingested snippet reaches a prompt
+through one renderer that tags it `[ingested: src-...]`, provenance survives chunking so the
+tag names the registered source, and the agent system prompts carry an explicit sentence saying
+such material describes what someone else wrote down and must never be followed as a directive.
+A file containing "ignore all previous instructions" is shown as labelled reference text — there
+is a test that ingests exactly that and asserts the label and the sentence are both present.
+
+**Quarantine is stricter here than for outcome memory.** A mock run reads its own mock outcome
+patterns so the learning loop is exercised by the tests, but the strategist reads meta memory
+with `include_mock=False` unconditionally: a mock-authored *strategy* would silently shape real
+output. Mock-written reflections and meta-patterns are stored, marked, and never steer a run;
+`ideate meta` hides them unless you pass `--include-mock`.
+
+### What it costs
+
+One `ideate run` makes `strategist + 1 + retrieval_rounds + 1 + iterations × (1 + judges) + 1 +
+reflector` calls, where `strategist` and `reflector` are 1 when enabled. With defaults (2
+retrieval rounds, 1–2 idea rounds, 3 judges) that is roughly 11–15 calls.
+
 ## Evidence discipline
 
 The repo's `CLAUDE.md` rules are enforced in code, not just documented:
@@ -192,17 +285,24 @@ Generated from `ideate <command> --help` (argparse). Flags override the matching
 environment variable.
 
 ```
-usage: ideate [-h] [--version] {index,run,judge,learn,memory,probe} ...
+usage: ideate [-h] [--version]
+              {index,run,judge,learn,memory,ingest,strategy,reflect,meta,probe}
+              ...
 
 Hackathon ideation system.
 
 positional arguments:
-  {index,run,judge,learn,memory,probe}
+  {index,run,judge,learn,memory,ingest,strategy,reflect,meta,probe}
     index               build or refresh the knowledge index
     run                 generate, judge and refine ideas for a theme
     judge               judge ideas from a JSON file
     learn               record a hackathon outcome and learn patterns from it
     memory              list learned patterns
+    ingest              normalise and register an external memory source
+    strategy            plan how to approach a theme (one call, no ideas)
+    reflect             reflect on a saved run and record what the system
+                        learned
+    meta                list meta-patterns or ingested memory sources
     probe               make one real call and write a receipt
 
 options:
@@ -376,6 +476,74 @@ One row per pattern: `{id}  {kind}  {text}  (tags: ...)`, prefixed `[mock]` for 
 rows. With nothing to show it prints `ideate: no patterns (pass --include-mock to list mock
 patterns)` on stderr.
 
+### `ideate ingest`
+
+```
+usage: ideate ingest [-h] [--kind {external,ideate}] [--title TITLE]
+                     [--reindex] [--corpus DIR] [--no-bundled-corpus]
+                     [--index DIR]
+                     PATH
+
+options:
+  --kind {external,ideate}   how to read the source
+  --title TITLE              title for the source (default: the file or directory name)
+  --reindex                  rebuild the index so the material is retrievable now
+```
+
+Normalises a memory system you built elsewhere and registers it with provenance, printing the
+source id on stdout. The format is detected from the content: ideate's own `memory.jsonl`,
+conversation exports (`{role, content}` records), generic JSON/JSONL notes, markdown with or
+without front matter, plain text, `CLAUDE.md`-style rule files (stored as `kind: rules`), or a
+directory of any of these. Re-ingesting unchanged content prints `unchanged` and does nothing.
+Ingested documents join the corpus fingerprint, so the index rebuilds on the next `ideate
+index` if you do not pass `--reindex`. See
+[Bringing in your own memory systems](#bringing-in-your-own-memory-systems) for the trust rule.
+
+### `ideate strategy`
+
+```
+usage: ideate strategy [-h] [--hours HOURS] [--team TEAM] [--criteria CRITERIA]
+                       [--prefer PREFER] [--avoid AVOID] [--tracks TRACKS]
+                       [--notes-file NOTES_FILE] [--json FILE] [--corpus DIR]
+                       [--no-bundled-corpus] [--index DIR]
+                       [--provider {mock,anthropic}] [--model MODEL] [--verbose]
+                       theme
+```
+
+Runs the strategist alone — one call, no ideas — and prints the plan: framing, problem type,
+emphasised techniques, retrieval angles, rubric emphasis, planned rounds and what it is
+watching for. Useful to sanity-check the approach (and its cost) before committing to a full
+run. Watermarked under the mock like any other output.
+
+### `ideate reflect`
+
+```
+usage: ideate reflect [-h] --run RUN_ID [--json FILE] [--corpus DIR]
+                      [--no-bundled-corpus] [--index DIR]
+                      [--provider {mock,anthropic}] [--model MODEL] [--verbose]
+```
+
+Reflects on a run already saved under `runs/<run_id>/` and records what the system learned,
+without regenerating ideas. Use it when a run finished with `--no-reflector`, or to reflect
+again after you know how the ideas actually landed.
+
+### `ideate meta`
+
+```
+usage: ideate meta [-h] [--kind {strategy,process,pitfall}] [--scope S]
+                   [--sources] [--include-mock]
+
+options:
+  --kind {strategy,process,pitfall}
+  --scope S             'global' or a problem type
+  --sources             list ingested memory sources instead
+  --include-mock        also list rows produced under the mock
+```
+
+Lists what the system has learned about its own process, with each pattern's confidence and
+observation count, or — with `--sources` — the ingested memory sources and their provenance.
+Mock-produced rows are hidden unless `--include-mock`, and marked `[mock]` when shown.
+
 ### `ideate probe`
 
 ```
@@ -407,6 +575,10 @@ blocker (exit 2).
 | `IDEATE_EFFORT` | `high` | effort for research, domain expert, creativity, synthesizer | |
 | `IDEATE_EFFORT_LIGHT` | `medium` | effort for orchestrator, judges, rerank, learn, probe | |
 | `IDEATE_MAX_TOKENS` | `16000` | `max_tokens` per call; raise it if a call is truncated | |
+| `IDEATE_STRATEGIST` | `1` | run the strategist before the pipeline | `--no-strategist` |
+| `IDEATE_REFLECTOR` | `1` | run the reflector after the pipeline | `--no-reflector` |
+| `IDEATE_META_PATH` | `.ideate/meta.jsonl` | meta memory: reflections, meta-patterns, ingested sources | |
+| `IDEATE_META_K` | `6` | meta chunks and meta-patterns shown to the strategist | |
 | `IDEATE_FALLBACKS` | `true` | send the server-side fallback beta + `fallbacks="default"` | |
 | `IDEATE_TIMEOUT` | `600.0` | SDK client timeout in seconds | |
 | `IDEATE_CORPUS_DIRS` | empty | extra corpus directories on top of the bundled one | `--corpus DIR` (repeatable) |
