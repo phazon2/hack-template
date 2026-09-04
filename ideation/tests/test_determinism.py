@@ -11,6 +11,7 @@ from pathlib import Path
 from ideate.llm.base import LLMRequest
 from ideate.llm.mock import MockLLM
 from ideate.llm.schema import arr, obj, str_
+from ideate.meta.ingest import ingest_into
 from ideate.models import HackathonConstraints
 from ideate.pipeline import IdeationSystem
 
@@ -20,11 +21,14 @@ VOLATILE_TRACE = {"duration_ms": 0, "started_at": ""}
 
 
 def normalized(data: dict) -> dict:
-    """A result dict with run id, timestamps and durations zeroed."""
+    """A result dict with run id, timestamps (trace and reflection) and durations zeroed."""
     d = json.loads(json.dumps(data))
     d["run_id"] = ""
     d["created_at"] = ""
     d["trace"] = [dict(step, **VOLATILE_TRACE) for step in d["trace"]]
+    if d.get("reflection"):
+        # The reflection carries the run id and the injected wall clock; both are excluded above.
+        d["reflection"] = dict(d["reflection"], created_at="", run_id="")
     return d
 
 
@@ -58,6 +62,32 @@ def test_pipeline_twice_in_process_identical(settings):
     assert first.run_id != second.run_id
     assert normalized(first.to_dict()) == normalized(second.to_dict())
     assert first.queries == second.queries
+
+
+def test_meta_memory_written_by_a_mock_run_does_not_steer_the_next_run(settings):
+    """Run 2 sees run 1's meta memory in the store and must still produce an identical result."""
+    system = IdeationSystem(settings, llm=MockLLM(seed=0))
+    first = system.ideate(THEME)
+    assert first.reflection is not None
+    stored = system.meta.meta_patterns(include_mock=True)
+    assert stored, "the mock run must have written meta-patterns"
+    assert system.meta.meta_patterns() == [], "mock meta-patterns must be quarantined from real runs"
+
+    second = IdeationSystem(settings, llm=MockLLM(seed=0)).ideate(THEME)
+    assert normalized(first.to_dict()) == normalized(second.to_dict())
+    assert first.strategy == second.strategy
+
+
+def test_ingested_material_changes_the_fingerprint_but_not_the_ordering(settings, tmp_path):
+    """Ingesting is the only thing that may move the index; two builds of it still match."""
+    system = IdeationSystem(settings, llm=MockLLM(seed=0))
+    before = system.load_or_build_index().corpus_fingerprint
+    rules = tmp_path / "CLAUDE.md"
+    rules.write_text("# Rules\n\nShip a public URL before hour nine.\n", encoding="utf-8")
+    ingest_into(rules, system.meta)
+    after = system.build_index(force=True).corpus_fingerprint
+    assert after != before
+    assert IdeationSystem(settings, llm=MockLLM(seed=0)).build_index(force=True).corpus_fingerprint == after
 
 
 # --------------------------------------------------------------------------- (c) CLI across hash seeds

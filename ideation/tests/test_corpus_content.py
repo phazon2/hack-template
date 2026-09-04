@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 CORPUS = Path(__file__).resolve().parents[1] / "src" / "ideate" / "corpus"
-ALLOWED_KINDS = {"guidance", "data-source", "archetype", "antipattern", "event", "evidence"}
+ALLOWED_KINDS = {"guidance", "data-source", "archetype", "antipattern", "event", "evidence", "meta"}
 EXPECTED_FILES = {
     "judging-criteria.md",
     "demo-strategy.md",
@@ -23,8 +23,23 @@ EXPECTED_FILES = {
     "project-archetypes.md",
     "generic-idea-antipatterns.md",
 }
+EXPECTED_META_FILES = {
+    "idea-generation-strategy.md",
+    "problem-solving-methods.md",
+    "memory-system-design.md",
+    "self-improving-systems.md",
+    "retrieval-strategy.md",
+    "evaluation-design.md",
+    "agent-system-design.md",
+    "external-memory-ingestion.md",
+}
 MIN_WORDS = 400
+MIN_META_WORDS = 500
 MAX_WORDS = 1200
+
+
+def _meta_documents() -> list[Path]:
+    return [p for p in _documents() if p.parent.name == "meta"]
 
 
 def _documents() -> list[Path]:
@@ -49,6 +64,7 @@ def _body(path: Path) -> str:
 
 
 DOCS = _documents()
+META_DOCS = _meta_documents()
 
 
 def test_at_least_twelve_documents() -> None:
@@ -59,9 +75,12 @@ def test_at_least_twelve_documents() -> None:
 def test_readmes_exist_and_document_the_contract() -> None:
     top = (CORPUS / "README.md").read_text(encoding="utf-8")
     event = (CORPUS / "event" / "README.md").read_text(encoding="utf-8")
+    meta = (CORPUS / "meta" / "README.md").read_text(encoding="utf-8")
     for key in ("title", "tags", "kind", "source"):
         assert f"{key}" in top
     assert "kind: event" in event
+    assert "kind: meta" in meta
+    assert "never instructions" in meta
 
 
 @pytest.mark.parametrize("path", DOCS, ids=lambda p: p.name)
@@ -127,3 +146,45 @@ def test_no_invented_statistics() -> None:
     for path in DOCS:
         found = set(re.findall(r"\d+(?:\.\d+)?%", _body(path)))
         assert found <= allowed, f"{path.name}: unexpected percentages {found - allowed}"
+
+
+# --------------------------------------------------------------------------- meta layer (§18.5)
+def test_meta_corpus_has_at_least_eight_documents() -> None:
+    assert len(META_DOCS) >= 8
+    assert EXPECTED_META_FILES <= {p.name for p in META_DOCS}
+    assert all(_front_matter(p)["kind"] == "meta" for p in META_DOCS)
+
+
+def test_meta_documents_are_long_enough() -> None:
+    """§18.5 asks for 500-1200 words; the shared upper bound already applies."""
+    for path in META_DOCS:
+        words = len(_body(path).split())
+        assert MIN_META_WORDS <= words <= MAX_WORDS, f"{path.name}: {words} words"
+
+
+def test_meta_kind_is_only_used_inside_the_meta_directory() -> None:
+    outside = [p.name for p in DOCS if p.parent.name != "meta" and _front_matter(p)["kind"] == "meta"]
+    assert not outside, f"kind 'meta' used outside corpus/meta: {outside}"
+
+
+def test_memory_design_covers_the_required_ground() -> None:
+    body = _body(CORPUS / "meta" / "memory-system-design.md").lower()
+    for term in ("episodic", "semantic", "procedural", "provenance", "confidence", "forgetting"):
+        assert term in body, f"memory-system-design.md: missing {term}"
+    assert "self-confirming" in body
+    assert "mock" in body and "quarantin" in body
+
+
+def test_self_improvement_doc_covers_degeneration_and_the_human_point() -> None:
+    body = _body(CORPUS / "meta" / "self-improving-systems.md").lower()
+    for term in ("reflection", "actor-critic", "eval", "drift", "confirmation loop", "metric gaming"):
+        assert term in body, f"self-improving-systems.md: missing {term}"
+    assert "human" in body and "contested" in body
+
+
+def test_ingestion_doc_states_the_data_not_instructions_rule() -> None:
+    body = _body(CORPUS / "meta" / "external-memory-ingestion.md").lower()
+    assert "never instructions" in body or "never be followed as instructions" in body
+    assert "reference material" in body or "reference data" in body
+    for term in ("provenance", "trust level", "fingerprint", "format"):
+        assert term in body, f"external-memory-ingestion.md: missing {term}"

@@ -8,6 +8,7 @@ from ideate.agents.base import Agent
 from ideate.agents.context import RunContext, constraints_block, knowledge_block
 from ideate.agents.research import citations_schema, known_ids
 from ideate.knowledge.tokenize import tokenize
+from ideate.meta.ingest import TRUST_NOTE
 from ideate.llm.base import LLMBadOutput
 from ideate.llm.schema import arr, enum, int_, obj, str_
 from ideate.models import TECHNIQUES, HackathonConstraints, Idea, IdeationState, RetrievedChunk
@@ -41,7 +42,7 @@ CREATIVITY_SYSTEM = (
     "with their access level, a demo moment that lands on screen in about 90 seconds, an honest "
     "build-hour estimate within the event's hours, and cites at least one of the shown snippets "
     "by chunk id. Ideas that use anything in the must-avoid list are invalid. Never invent "
-    "statistics, prior winners or case studies."
+    "statistics, prior winners or case studies. " + TRUST_NOTE
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -129,13 +130,25 @@ def diverse(candidates: list[Idea], earlier: list[Idea], threshold: float = DIVE
 
 
 # --------------------------------------------------------------------------- prompt
-def technique_lines(n: int) -> str:
-    """One line per idea slot: slot k uses ``TECHNIQUES[k % 6]``."""
+def technique_lines(n: int, techniques: list[str] | None = None) -> str:
+    """One line per idea slot, cycling ``techniques`` (``TECHNIQUES`` when the strategy named none)."""
+    cycle = list(techniques) if techniques else list(TECHNIQUES)
     lines = []
     for k in range(n):
-        technique = TECHNIQUES[k % len(TECHNIQUES)]
+        technique = cycle[k % len(cycle)]
         lines.append(f"- idea {k + 1}: technique={technique} ({TECHNIQUE_HINTS[technique]})")
     return "\n".join(lines)
+
+
+def strategy_lines(state: IdeationState) -> str:
+    """The strategist's framing and the failure modes this run must avoid ("" without a strategy)."""
+    strategy = state.strategy
+    if strategy is None:
+        return ""
+    return (
+        f"Framing for this run: {strategy.framing or '(none given)'}\n"
+        f"Avoid: {', '.join(strategy.watch_for) or '(nothing flagged)'}"
+    )
 
 
 def _bullets(items: list[str], empty: str) -> str:
@@ -165,9 +178,10 @@ def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk],
     """User prompt for one creativity call (a pure function of the state and the shown chunks)."""
     building_blocks = state.assessment.building_blocks if state.assessment else []
     hours = state.constraints.hours
+    emphasis = state.strategy.emphasis_techniques if state.strategy else []
     parts = [
         f"Theme: {state.theme}\n{constraints_block(state.constraints)}",
-        f"Round {state.iteration}: generate exactly {n} ideas. Technique per slot:\n{technique_lines(n)}",
+        f"Round {state.iteration}: generate exactly {n} ideas. Technique per slot:\n{technique_lines(n, emphasis)}",
         f"Lessons from past outcomes (leverage the successes, avoid the failures):\n{state.memory_context or '- (no past outcomes recorded)'}",
         f"Resource menu (building blocks with access level):\n{_bullets(building_blocks, '(no assessment yet)')}",
         (
@@ -187,6 +201,9 @@ def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk],
     ]
     if top3:
         parts.append(refinement_block(state, top3))
+    strategy = strategy_lines(state)
+    if strategy:
+        parts.insert(1, strategy)
     return "\n\n".join(parts)
 
 
@@ -246,12 +263,16 @@ class CreativityAgent(Agent):
         prompt = creativity_prompt(state, n, shown, antipatterns, top3)
 
         survivors, violations = self._generate(ctx, prompt, schema, state, shown_ids, parent_ids)
+        state.dropped_invalid += len(violations)
         if violations:
-            more, _ = self._generate(ctx, retry_prompt(prompt, violations), schema, state, shown_ids, parent_ids)
+            more, retry_violations = self._generate(ctx, retry_prompt(prompt, violations), schema, state, shown_ids, parent_ids)
+            state.dropped_invalid += len(retry_violations)
             survivors.extend(more)
         if not survivors:
             raise LLMBadOutput(f"creativity round {state.iteration}: no idea passed validation after one retry")
-        kept = diverse(survivors, state.ideas)[:n]
+        unique = diverse(survivors, state.ideas)
+        state.dropped_duplicate += len(survivors) - len(unique)
+        kept = unique[:n]
         for k, idea in enumerate(kept, 1):
             idea.id = f"idea-{state.iteration}-{k}"
         state.ideas.extend(kept)

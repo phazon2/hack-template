@@ -13,6 +13,8 @@ from ideate import __version__
 from ideate.agents.context import RunContext, TracingLLM, utc_now
 from ideate.agents.evaluator import judge_context, persona_text
 from ideate.agents.orchestrator import build_default_graph
+from ideate.agents.reflector import ReflectorAgent
+from ideate.agents.strategist import StrategistAgent
 from ideate.config import Settings
 from ideate.evaluation.judge import PanelJudge, compare_ideas
 from ideate.evaluation.rubric import Rubric
@@ -25,15 +27,20 @@ from ideate.llm.base import LLM, LLMConfigError, LLMRequest
 from ideate.llm.factory import make_llm
 from ideate.llm.schema import bool_, obj, str_
 from ideate.memory.store import MemoryStore
+from ideate.meta.ingest import MetaIngestError, ingest_path
+from ideate.meta.store import MetaStore
 from ideate.models import (
     Document,
     HackathonConstraints,
     Idea,
     IdeationResult,
     IdeationState,
+    MetaPattern,
     Outcome,
     PanelVerdict,
     Pattern,
+    RunReflection,
+    Strategy,
 )
 
 MOCK_PROVIDER = "mock"
@@ -73,7 +80,28 @@ def result_from_state(
         coverage_gaps=list(state.coverage_gaps),
         trace=list(ctx.trace),
         is_placeholder=provider == MOCK_PROVIDER,
+        strategy=state.strategy,
+        reflection=state.reflection,
     )
+
+
+def state_from_result(result: IdeationResult) -> IdeationState:
+    """The finished state of a saved run, so the reflector can judge that run's process (§18.6)."""
+    state = IdeationState(theme=result.theme, constraints=result.constraints)
+    state.queries = list(result.queries)
+    state.knowledge = list(result.knowledge)
+    state.research = result.research
+    state.assessment = result.assessment
+    state.ideas = list(result.ideas)
+    state.verdicts = list(result.verdicts)
+    state.ranking = list(result.ranking)
+    state.proposal = result.proposal
+    state.iteration = result.iterations
+    state.retrieval_rounds = result.retrieval_rounds
+    state.coverage_gaps = list(result.coverage_gaps)
+    state.strategy = result.strategy
+    state.reflection = result.reflection
+    return state
 
 
 # ``IdeationResult.from_state`` lives here, not in models.py (DESIGN §2.1).
@@ -101,6 +129,7 @@ class IdeationSystem:
         self.llm = llm
         self.now = now or utc_now
         self.memory = MemoryStore(self.settings.memory_path)
+        self.meta = MetaStore(self.settings.meta_path)
 
     # ------------------------------------------------------------------ providers
     def _llm(self) -> LLM:
@@ -108,6 +137,19 @@ class IdeationSystem:
 
     def _tracing(self, llm: LLM, trace: list) -> TracingLLM:
         return TracingLLM(llm, trace, self.settings, now=self.now)
+
+    def _context(
+        self, llm: LLM, trace: list, constraints: HackathonConstraints, kb: KnowledgeBase
+    ) -> RunContext:
+        """A ``RunContext`` with meta memory attached and the configured reranker installed."""
+        settings = self.settings
+        rubric = Rubric.from_judging_criteria(constraints.judging_criteria)
+        ctx = RunContext(self._tracing(llm, trace), kb, self.memory, rubric, settings, trace, meta=self.meta)
+        if settings.reranker == "llm":
+            kb.reranker = LLMReranker(ctx.llm, effort=settings.effort_light)
+        elif settings.reranker == "none":
+            kb.reranker = None
+        return ctx
 
     # ------------------------------------------------------------------ ideate
     def ideate(self, theme: str, constraints: HackathonConstraints | None = None) -> IdeationResult:
@@ -118,16 +160,38 @@ class IdeationSystem:
         is_mock = llm.provider == MOCK_PROVIDER
         kb = self.load_or_build_index()
         kb.add_memory_patterns(self.memory.patterns(include_mock=is_mock))
-        rubric = Rubric.from_judging_criteria(constraints.judging_criteria)
         trace: list = []
-        ctx = RunContext(self._tracing(llm, trace), kb, self.memory, rubric, settings, trace)
-        if settings.reranker == "llm":
-            kb.reranker = LLMReranker(ctx.llm, effort=settings.effort_light)
-        elif settings.reranker == "none":
-            kb.reranker = None
+        ctx = self._context(llm, trace, constraints, kb)
+        run_id = uuid.uuid4().hex[:12]
         state = IdeationState(theme, constraints)
-        build_default_graph(settings).run(state, ctx)
-        return result_from_state(state, ctx, settings, run_id=uuid.uuid4().hex[:12], created_at=self.now())
+        build_default_graph(settings, run_id).run(state, ctx)
+        return result_from_state(state, ctx, settings, run_id=run_id, created_at=self.now())
+
+    # ------------------------------------------------------------------ meta layer
+    def strategy(self, theme: str, constraints: HackathonConstraints | None = None) -> Strategy:
+        """Run the strategist alone (one LLM call) and return its sanitized plan (§18.8)."""
+        constraints = constraints if constraints is not None else HackathonConstraints()
+        trace: list = []
+        ctx = self._context(self._llm(), trace, constraints, self.load_or_build_index())
+        state = IdeationState(theme, constraints)
+        StrategistAgent().run(state, ctx)
+        return state.strategy if state.strategy is not None else Strategy()
+
+    def reflect(self, run_id: str) -> RunReflection:
+        """Run the reflector alone over a saved run; the reflection and its patterns go to meta memory."""
+        result_path = Path(self.settings.runs_dir) / run_id / RESULT_FILE
+        if not result_path.exists():
+            raise ValueError(f"run {run_id!r} not found under {self.settings.runs_dir}")
+        result = load_result(result_path)
+        state = state_from_result(result)
+        # The saved trace seeds the context so the reflector sees the ORIGINAL run's per-agent cost.
+        ctx = self._context(self._llm(), list(result.trace), result.constraints, self.load_or_build_index())
+        ReflectorAgent(result.run_id, now=self.now).run(state, ctx)
+        return state.reflection if state.reflection is not None else RunReflection(run_id=result.run_id)
+
+    def meta_patterns_for(self, run_id: str, include_mock: bool = False) -> list[MetaPattern]:
+        """The meta-patterns in meta memory that this run wrote (merged repeats keep their first run)."""
+        return [p for p in self.meta.meta_patterns(include_mock=include_mock) if p.source_run_id == run_id]
 
     # ------------------------------------------------------------------ judge
     def judge(
@@ -184,7 +248,20 @@ class IdeationSystem:
 
     # ------------------------------------------------------------------ index
     def _documents(self) -> list[Document]:
-        return load_corpus(self.settings.all_corpus_dirs())
+        """The corpus plus every registered memory source, so ingested material is indexed (§18.8).
+
+        A source whose path has disappeared is skipped with a stderr warning rather than failing
+        the whole index; its documents then leave the corpus fingerprint, which is a real change.
+        """
+        documents = load_corpus(self.settings.all_corpus_dirs())
+        for source in self.meta.sources():
+            try:
+                _, ingested = ingest_path(source.path, kind=source.kind, now=self.now)
+            except MetaIngestError as e:
+                print(f"ideate: memory source {source.id} skipped: {e}", file=sys.stderr)
+                continue
+            documents.extend(ingested)
+        return documents
 
     def _configure(self, kb: KnowledgeBase) -> KnowledgeBase:
         kb.bm25_weight = self.settings.bm25_weight
@@ -247,8 +324,9 @@ class IdeationSystem:
 
         run_dir = Path(self.settings.runs_dir) / result.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+        patterns = self.meta_patterns_for(result.run_id, include_mock=result.is_placeholder)
         (run_dir / RESULT_FILE).write_text(render_json(result) + "\n", encoding="utf-8")
-        (run_dir / REPORT_FILE).write_text(render_markdown(result), encoding="utf-8")
+        (run_dir / REPORT_FILE).write_text(render_markdown(result, patterns), encoding="utf-8")
         return run_dir
 
     def save_receipt(self, receipt: dict) -> Path:

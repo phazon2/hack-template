@@ -148,6 +148,23 @@ class Rubric:
         """Weighted 1..5 score; criteria absent from ``scores`` count as 3.0."""
         return scoring.weighted_score(scores, self.weights())
 
+    def reweighted(self, emphasis: dict[str, float]) -> "Rubric":
+        """A NEW rubric whose weights are multiplied by ``emphasis`` and renormalised.
+
+        Unknown names in ``emphasis`` are ignored and the receiver is never mutated. The total
+        weight is preserved, so only the balance between criteria changes (DESIGN-META §18.9).
+        """
+        criteria = [Criterion(c.name, c.weight, c.description, dict(c.anchors)) for c in self.criteria]
+        total = sum(c.weight for c in criteria)
+        for criterion in criteria:
+            criterion.weight *= float(emphasis.get(criterion.name, DEFAULT_WEIGHT))
+        scaled_total = sum(c.weight for c in criteria)
+        if total <= 0 or scaled_total <= 0:
+            return Rubric(criteria=[Criterion(c.name, c.weight, c.description, dict(c.anchors)) for c in self.criteria])
+        for criterion in criteria:
+            criterion.weight *= total / scaled_total
+        return Rubric(criteria=criteria)
+
     def to_prompt(self, constraints: HackathonConstraints | None = None) -> str:
         """Rubric text for a judge prompt, with ``{hours}``/``{team_size}`` filled from ``constraints``."""
         c = constraints or HackathonConstraints()

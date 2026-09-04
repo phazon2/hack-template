@@ -176,14 +176,36 @@ def test_condition_b_is_the_only_loop_rule():
 
 
 def test_build_default_graph_structure():
-    g = build_default_graph(Settings(provider="mock"))
+    g = build_default_graph(Settings(provider="mock", strategist=False, reflector=False))
     assert list(g.nodes) == ["orchestrator", "research", "retrieve_more", "domain_expert", "creativity", "evaluator", "synthesizer"]
     assert g.entry == "orchestrator"
     assert g.edges == {"orchestrator": "research", "research": "retrieve_more", "domain_expert": "creativity", "creativity": "evaluator", "synthesizer": END}
     assert set(g.conditions) == {"retrieve_more", "evaluator"}
 
 
+def test_build_default_graph_wraps_the_run_in_the_meta_layer():
+    g = build_default_graph(Settings(provider="mock"))
+    assert list(g.nodes)[0] == "strategist" and list(g.nodes)[-1] == "reflector"
+    assert g.entry == "strategist"
+    assert g.edges["strategist"] == "orchestrator"
+    assert g.edges["synthesizer"] == "reflector" and g.edges["reflector"] == END
+    assert set(g.conditions) == {"retrieve_more", "evaluator"}
+
+
 # --------------------------------------------------------------------------- end to end
+def expected_trace_len(state, settings) -> int:
+    """DESIGN-META §18.10: strategist + 1 + retrieval_rounds + 1 + iterations * (1 + personas) + 1 + reflector."""
+    return (
+        int(settings.strategist)
+        + 1
+        + state.retrieval_rounds
+        + 1
+        + state.iteration * (1 + len(settings.judge_personas))
+        + 1
+        + int(settings.reflector)
+    )
+
+
 def run_default(kb, tmp_path, llm=None, **overrides):
     ctx = make_ctx(kb, tmp_path, llm=llm, **overrides)
     state = IdeationState(THEME, HackathonConstraints())
@@ -195,7 +217,8 @@ def test_full_graph_under_default_mock(kb, tmp_path):
     mock = MockLLM(seed=0)
     state, ctx = run_default(kb, tmp_path, llm=mock)
     settings = ctx.settings
-    assert state.iteration == settings.max_iterations == 2
+    # The mock strategist plans the midpoint of int_(1, max_iterations), so loop rule B stops at 1.
+    assert state.strategy is not None and state.iteration == state.strategy.rounds == 1
     assert len(state.ideas) == settings.ideas_per_round * state.iteration
     assert 1 <= state.retrieval_rounds <= settings.max_retrieval_rounds
     ids = [i.id for i in state.ideas]
@@ -204,23 +227,50 @@ def test_full_graph_under_default_mock(kb, tmp_path):
     assert sorted(state.ranking) == sorted(ids)
     assert state.proposal is not None and state.proposal.idea_id == state.ranking[0]
     assert state.research is not None and state.assessment is not None
-    assert len(ctx.trace) == 1 + state.retrieval_rounds + 1 + state.iteration * (1 + len(settings.judge_personas)) + 1
+    assert len(ctx.trace) == expected_trace_len(state, settings)
     assert all(is_canonical_tag(t.agent) for t in ctx.trace)
     assert all(t.error is None for t in ctx.trace)
     assert all(len(i.citations) >= 1 for i in state.ideas)
     assert all(validate_idea(i, state.constraints) == [] for i in state.ideas)
     assert diverse(state.ideas, []) == state.ideas
     assert all(i.id == f"idea-{r}-{n}" for r in (1, 2) for n, i in enumerate([x for x in state.ideas if x.id.startswith(f"idea-{r}-")], 1))
-    assert state.visited[:3] == ["orchestrator", "research", "retrieve_more"]
-    assert state.visited[-1] == "synthesizer" and state.visited.count("creativity") == 2 and state.visited.count("evaluator") == 2
+    assert state.visited[:4] == ["strategist", "orchestrator", "research", "retrieve_more"]
+    assert state.visited[-1] == "reflector" and state.visited.count("creativity") == 1 and state.visited.count("evaluator") == 1
+    assert state.reflection is not None and state.reflection.provider == "mock"
     assert len(mock.calls) == len(ctx.trace)  # no corrective retries under synthesized output
+    angles = state.strategy.retrieval_angles
+    assert state.queries[0] == THEME and state.queries[1 : 1 + len(angles)] == angles
+    assert ctx.queries_issued[:2] == [THEME, THEME]  # the strategist's meta and rules retrievals
+    assert ctx.queries_issued[2 : 2 + len(state.queries)] == state.queries
+
+
+def test_full_graph_without_the_meta_layer_keeps_the_baseline_shape(kb, tmp_path):
+    mock = MockLLM(seed=0)
+    state, ctx = run_default(kb, tmp_path, llm=mock, strategist=False, reflector=False)
+    settings = ctx.settings
+    assert state.strategy is None and state.reflection is None
+    assert state.iteration == settings.max_iterations == 2
+    # The diversity filter may drop a near-duplicate of round 1 in round 2 (state.dropped_duplicate).
+    assert len(state.ideas) == settings.ideas_per_round * state.iteration - state.dropped_duplicate
+    assert settings.ideas_per_round <= len(state.ideas) <= settings.ideas_per_round * state.iteration
+    assert len(ctx.trace) == expected_trace_len(state, settings)
+    assert not any(t.agent in ("strategist", "reflector") for t in ctx.trace)
+    assert state.visited[0] == "orchestrator" and state.visited[-1] == "synthesizer"
     assert state.queries[0] == THEME and ctx.queries_issued[: len(state.queries)] == state.queries
+
+
+def normalized_state(state) -> dict:
+    """State dict with the reflection's wall-clock timestamp zeroed (the only volatile field)."""
+    d = state.to_dict()
+    if d.get("reflection"):
+        d["reflection"] = dict(d["reflection"], created_at="")
+    return d
 
 
 def test_full_graph_is_deterministic(kb, tmp_path):
     state1, ctx1 = run_default(kb, tmp_path)
     state2, ctx2 = run_default(kb, tmp_path)
-    assert state1.to_dict() == state2.to_dict()
+    assert normalized_state(state1) == normalized_state(state2)
     assert ctx1.queries_issued == ctx2.queries_issued
     steps1 = [dict(t.to_dict(), duration_ms=0, started_at="") for t in ctx1.trace]
     steps2 = [dict(t.to_dict(), duration_ms=0, started_at="") for t in ctx2.trace]
@@ -234,7 +284,7 @@ def test_accept_branch_stops_after_one_round(kb, tmp_path):
     assert state.iteration == 1
     assert len(state.ideas) == 8 and state.visited.count("creativity") == 1
     assert all(v.consensus.weighted_score == 5.0 for v in state.verdicts)
-    assert len(ctx.trace) == 1 + state.retrieval_rounds + 1 + 1 * (1 + 3) + 1
+    assert len(ctx.trace) == expected_trace_len(state, ctx.settings)
     assert state.proposal.idea_id == state.ranking[0]
     assert mock.remaining_scripts() == {"judge": 0}
 
@@ -258,4 +308,4 @@ def test_research_reruns_when_gaps_add_chunks(kb, tmp_path):
     assert [t.agent for t in ctx.trace].count("research") == 2
     assert state.retrieval_rounds == 2 and state.visited.count("retrieve_more") == 2
     assert state.coverage_gaps == state.research.coverage_gaps[:4]  # from the LAST research round
-    assert len(ctx.trace) == 1 + 2 + 1 + state.iteration * 4 + 1
+    assert len(ctx.trace) == expected_trace_len(state, ctx.settings)

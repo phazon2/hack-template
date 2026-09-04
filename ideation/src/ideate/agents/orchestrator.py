@@ -8,7 +8,9 @@ from ideate.agents.creativity import CreativityAgent
 from ideate.agents.domain_expert import DomainExpertAgent
 from ideate.agents.evaluator import EvaluatorAgent
 from ideate.agents.graph import END, Condition, Graph
+from ideate.agents.reflector import ReflectorAgent
 from ideate.agents.research import ResearchAgent
+from ideate.agents.strategist import StrategistAgent
 from ideate.agents.synthesizer import SynthesizerAgent
 from ideate.config import Settings
 from ideate.improvement.feedback import memory_context_for
@@ -87,7 +89,8 @@ class OrchestratorAgent(Agent):
         data = ctx.llm.complete(request).data
         raw = data.get("queries", []) if isinstance(data, dict) else []
         expansions = [str(q).strip() for q in raw if str(q).strip()]
-        state.queries = list(dict.fromkeys([state.theme] + expansions))
+        angles = list(state.strategy.retrieval_angles) if state.strategy else []
+        state.queries = list(dict.fromkeys([state.theme] + angles + expansions))
 
         retrieved: list[RetrievedChunk] = []
         for query in state.queries:
@@ -127,6 +130,12 @@ def after_retrieve_more(settings: Settings) -> Condition:
     return choose
 
 
+def planned_rounds(state: IdeationState, settings: Settings) -> int:
+    """``min(strategy.rounds or settings.max_iterations, settings.max_iterations)`` (§18.3 loop rule B)."""
+    planned = state.strategy.rounds if state.strategy and state.strategy.rounds else settings.max_iterations
+    return min(planned, settings.max_iterations)
+
+
 def after_evaluator(settings: Settings) -> Condition:
     """Condition B (the ONLY loop rule): another creativity round while too few strong ideas and rounds remain."""
 
@@ -135,32 +144,48 @@ def after_evaluator(settings: Settings) -> Condition:
             v for v in state.verdicts
             if not v.consensus.disqualified and v.consensus.weighted_score >= settings.accept_threshold
         ]
-        if len(strong) < settings.min_strong_ideas and state.iteration < settings.max_iterations:
+        if len(strong) < settings.min_strong_ideas and state.iteration < planned_rounds(state, settings):
             return CreativityAgent.name
         return SynthesizerAgent.name
 
     return choose
 
 
-def build_default_graph(settings: Settings) -> Graph:
-    """orchestrator -> research -> retrieve_more -> (A) -> domain_expert -> creativity -> evaluator -> (B) -> synthesizer -> END."""
+def build_default_graph(settings: Settings, run_id: str = "") -> Graph:
+    """[strategist ->] orchestrator -> research -> retrieve_more -> (A) -> domain_expert -> creativity -> evaluator -> (B) -> synthesizer -> [reflector ->] END.
+
+    The strategist and the reflector are the meta layer (DESIGN-META §18.3); each is present only
+    when its setting is on. ``run_id`` is stamped on what the reflector writes to meta memory.
+    """
     graph = Graph()
-    for agent in (
-        OrchestratorAgent(),
-        ResearchAgent(),
-        RetrieveMoreAgent(),
-        DomainExpertAgent(),
-        CreativityAgent(),
-        EvaluatorAgent(),
-        SynthesizerAgent(),
-    ):
+    agents: list = [StrategistAgent()] if settings.strategist else []
+    agents.extend(
+        [
+            OrchestratorAgent(),
+            ResearchAgent(),
+            RetrieveMoreAgent(),
+            DomainExpertAgent(),
+            CreativityAgent(),
+            EvaluatorAgent(),
+            SynthesizerAgent(),
+        ]
+    )
+    if settings.reflector:
+        agents.append(ReflectorAgent(run_id))
+    for agent in agents:
         graph.add_node(agent)
+    if settings.strategist:
+        graph.add_edge(StrategistAgent.name, OrchestratorAgent.name)
     graph.add_edge(OrchestratorAgent.name, ResearchAgent.name)
     graph.add_edge(ResearchAgent.name, RetrieveMoreAgent.name)
     graph.add_conditional_edge(RetrieveMoreAgent.name, after_retrieve_more(settings))
     graph.add_edge(DomainExpertAgent.name, CreativityAgent.name)
     graph.add_edge(CreativityAgent.name, EvaluatorAgent.name)
     graph.add_conditional_edge(EvaluatorAgent.name, after_evaluator(settings))
-    graph.add_edge(SynthesizerAgent.name, END)
-    graph.set_entry(OrchestratorAgent.name)
+    if settings.reflector:
+        graph.add_edge(SynthesizerAgent.name, ReflectorAgent.name)
+        graph.add_edge(ReflectorAgent.name, END)
+    else:
+        graph.add_edge(SynthesizerAgent.name, END)
+    graph.set_entry(StrategistAgent.name if settings.strategist else OrchestratorAgent.name)
     return graph

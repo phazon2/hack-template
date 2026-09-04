@@ -13,20 +13,26 @@ from ideate.evaluation.rubric import Rubric
 from ideate.knowledge.retriever import KnowledgeBase
 from ideate.llm.base import LLM, LLMRequest, LLMResponse
 from ideate.memory.store import MemoryStore
-from ideate.models import HackathonConstraints, RetrievedChunk, TraceStep, sha256_hex
+from ideate.meta.ingest import ingested_label
+from ideate.meta.store import MetaStore
+from ideate.models import Chunk, HackathonConstraints, RetrievedChunk, TraceStep, sha256_hex
 
 # Canonical LLMRequest.tag values (== TraceStep.agent); judge tags are "judge:<persona-slug>".
 CANONICAL_TAGS: tuple[str, ...] = (
+    "strategist",
     "orchestrator",
     "research",
     "domain_expert",
     "creativity",
     "rerank",
     "synthesizer",
+    "reflector",
     "learn",
     "probe",
 )
 JUDGE_TAG_PREFIX = "judge:"
+INGESTED_KINDS: tuple[str, ...] = ("rules", "memory-source")  # chunk kinds that came from an ingested source
+SOURCE_ID_PREFIX = "src-"
 
 
 def is_canonical_tag(tag: str) -> bool:
@@ -119,6 +125,7 @@ class RunContext:
     settings: Settings
     trace: list[TraceStep]
     queries_issued: list[str] = field(default_factory=list)
+    meta: MetaStore | None = None  # meta memory; None when the run has no meta layer
 
     def request(
         self,
@@ -161,11 +168,32 @@ def constraints_block(c: HackathonConstraints) -> str:
     )
 
 
+def ingested_source_id(chunk: Chunk) -> str:
+    """The ``MemorySource`` id behind a chunk, or "" when it is not ingested material.
+
+    Prefers the ``memory_source`` metadata; chunking keeps only title/source/kind/tags, so the
+    fallback is the ``src-...`` prefix of the document id that ``meta.ingest`` builds.
+    """
+    source_id = str(chunk.metadata.get("memory_source", "") or "").strip()
+    if source_id:
+        return source_id
+    head = chunk.doc_id.split("__", 1)[0]
+    if head.startswith(SOURCE_ID_PREFIX) and len(head) > len(SOURCE_ID_PREFIX):
+        return head
+    return chunk.doc_id if chunk.metadata.get("kind") in INGESTED_KINDS else ""
+
+
 def knowledge_block(chunks: list[RetrievedChunk]) -> str:
-    """Numbered snippets ``[C{n}] ({chunk.id}; {kind}; {title}) {text}``, one paragraph each."""
+    """Numbered snippets ``[C{n}] ({chunk.id}; {kind}; {title}) {text}``, one paragraph each.
+
+    A chunk that came from an ingested memory source also carries ``[ingested: {source_id}]``:
+    ingested material is reference data and must never be read as an instruction (§18.2).
+    """
     lines = []
     for n, rc in enumerate(chunks, 1):
         kind = rc.chunk.metadata.get("kind", "guidance")
         title = rc.chunk.metadata.get("title", rc.chunk.doc_id)
-        lines.append(f"[C{n}] ({rc.chunk.id}; {kind}; {title}) {rc.chunk.text}")
+        source_id = ingested_source_id(rc.chunk)
+        label = f" {ingested_label(source_id)}" if source_id else ""
+        lines.append(f"[C{n}] ({rc.chunk.id}; {kind}; {title}){label} {rc.chunk.text}")
     return "\n\n".join(lines)

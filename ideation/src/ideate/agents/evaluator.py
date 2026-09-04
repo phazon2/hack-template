@@ -5,6 +5,7 @@ from __future__ import annotations
 from ideate.agents.base import Agent
 from ideate.agents.context import RunContext, constraints_block
 from ideate.evaluation.judge import PanelJudge, rank_ideas
+from ideate.evaluation.rubric import Rubric
 from ideate.models import IdeationState
 
 TOP_N = 3
@@ -64,6 +65,15 @@ def critiques_for(state: IdeationState) -> list[str]:
     return list(dict.fromkeys(out))[:MAX_CRITIQUES]
 
 
+def effective_rubric(state: IdeationState, rubric: Rubric) -> Rubric:
+    """``rubric`` reweighted by the strategy's emphasis, or ``rubric`` itself when there is none.
+
+    ``Rubric.reweighted`` is pure, so the run rubric (and ``DEFAULT_RUBRIC``) is never mutated.
+    """
+    emphasis = state.strategy.rubric_emphasis if state.strategy else {}
+    return rubric.reweighted(emphasis) if emphasis else rubric
+
+
 class EvaluatorAgent(Agent):
     """Judges ideas without a verdict, then re-ranks every idea and refreshes the critiques."""
 
@@ -71,7 +81,8 @@ class EvaluatorAgent(Agent):
 
     def run(self, state: IdeationState, ctx: RunContext) -> IdeationState:
         personas = [persona_text(p, state) for p in ctx.settings.judge_personas]
-        panel = PanelJudge(ctx.llm, ctx.rubric, personas, constraints=state.constraints, effort=ctx.settings.effort_light)
+        rubric = effective_rubric(state, ctx.rubric)
+        panel = PanelJudge(ctx.llm, rubric, personas, constraints=state.constraints, effort=ctx.settings.effort_light)
         judged = {v.idea_id for v in state.verdicts}
         pending = [idea for idea in state.ideas if idea.id not in judged]
         if pending:

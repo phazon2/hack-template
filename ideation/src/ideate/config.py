@@ -43,6 +43,10 @@ class Settings:
     memory_path: str = ".ideate/memory.jsonl"
     runs_dir: str = ".ideate/runs"
     receipts_dir: str = ".ideate/receipts"
+    meta_path: str = ".ideate/meta.jsonl"
+    strategist: bool = True
+    reflector: bool = True
+    meta_k: int = 6
     ideas_per_round: int = 8
     accept_threshold: float = 3.8
     min_strong_ideas: int = 3
@@ -88,7 +92,7 @@ class Settings:
         for name in ("effort", "effort_light"):
             if getattr(self, name) not in ("low", "medium", "high", "xhigh", "max"):
                 raise SettingsError(f"{name} must be low|medium|high|xhigh|max")
-        for name in ("ideas_per_round", "max_iterations", "max_retrieval_rounds", "retrieve_k", "chunk_size", "embedding_dim", "max_tokens"):
+        for name in ("ideas_per_round", "max_iterations", "max_retrieval_rounds", "meta_k", "retrieve_k", "chunk_size", "embedding_dim", "max_tokens"):
             if int(getattr(self, name)) < 1:
                 raise SettingsError(f"{name} must be >= 1")
         if not self.judge_personas:

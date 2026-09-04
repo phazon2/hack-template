@@ -7,11 +7,25 @@ from __future__ import annotations
 
 import json
 
-from ideate.models import Idea, IdeaEvaluation, IdeationResult, PanelVerdict, Proposal, RetrievedChunk, TraceStep
+from ideate.models import (
+    Idea,
+    IdeaEvaluation,
+    IdeationResult,
+    MetaPattern,
+    PanelVerdict,
+    Proposal,
+    RetrievedChunk,
+    RunReflection,
+    Strategy,
+    TraceStep,
+)
 
 PLACEHOLDER_BANNER = "PROVIDER: mock — placeholder content, not evidence"
 FEASIBILITY = "feasibility"
 NEUTRAL_SCORE = 3.0
+STRATEGY_HEADING = "## 1a. Strategy"
+LEARNED_HEADING = "## 10. What the system learned"
+NO_NEW_PATTERNS = "none new (nothing this run observed was missing from meta memory)"
 TABLE_HEADER = "| # | Idea | Technique | Weighted | Feasibility | Agreement | Disqualified |\n|---|---|---|---|---|---|---|"
 
 
@@ -142,6 +156,104 @@ def judgement_dict(ideas: list[Idea], verdicts: list[PanelVerdict], ranking: lis
     return d
 
 
+# --------------------------------------------------------------------------- meta layer (DESIGN-META §18.7)
+def strategy_rows(strategy: Strategy) -> list[tuple[str, str]]:
+    """The label/value rows of the Strategy section; a row with an empty value is not rendered."""
+    emphasis = ", ".join(f"{name} x{multiplier:g}" for name, multiplier in sorted(strategy.rubric_emphasis.items()))
+    return [
+        ("Problem type", strategy.problem_type or "unclear"),
+        ("Framing", strategy.framing or "none stated"),
+        ("Emphasised techniques", ", ".join(strategy.emphasis_techniques) or "none"),
+        ("Retrieval angles", ", ".join(strategy.retrieval_angles)),
+        ("Rubric emphasis", emphasis),
+        ("Planned rounds", str(strategy.rounds) if strategy.rounds else "the settings default"),
+        ("Watching for", ", ".join(strategy.watch_for) or "none"),
+        ("Why", strategy.rationale or "none given"),
+    ]
+
+
+def strategy_section(strategy: Strategy | None) -> list[str]:
+    """Section 1a, or no lines at all when no strategist ran."""
+    if strategy is None:
+        return []
+    return [STRATEGY_HEADING, ""] + [f"- {label}: {value}" for label, value in strategy_rows(strategy) if value]
+
+
+def pattern_lines(patterns: list[MetaPattern]) -> list[str]:
+    """One bullet per meta-pattern written, with its scope, confidence and observation count."""
+    if not patterns:
+        return [f"- {NO_NEW_PATTERNS}"]
+    return [
+        f"- [{p.kind}|{p.scope}] {p.text} (confidence {p.confidence:.2f}, observations {p.observations}"
+        + (f", tags: {', '.join(p.tags)}" if p.tags else "")
+        + ")"
+        for p in patterns
+    ]
+
+
+def learned_body(reflection: RunReflection, patterns: list[MetaPattern]) -> list[str]:
+    """The body of the "What the system learned" block, shared by the report and ``ideate reflect``."""
+    lines = ["### What worked", ""] + _bullets(reflection.what_worked)
+    lines += ["", "### What failed", ""] + _bullets(reflection.what_failed)
+    lines += ["", "### Process changes", ""] + _bullets(reflection.process_changes)
+    rows = [
+        ("Signal quality", reflection.signal_quality),
+        ("Winning technique", reflection.winning_technique),
+        ("Judge disagreement", reflection.judge_disagreement),
+        ("Wasted effort", "; ".join(reflection.wasted_effort)),
+    ]
+    stated = [f"- {label}: {value}" for label, value in rows if value]
+    if stated:
+        lines += ["", "### Signals", ""] + stated
+    return lines + ["", "### Meta-patterns written", ""] + pattern_lines(patterns)
+
+
+def learned_section(reflection: RunReflection | None, patterns: list[MetaPattern] | None) -> list[str]:
+    """Section 10, or no lines at all when no reflector ran."""
+    if reflection is None:
+        return []
+    return [LEARNED_HEADING, ""] + learned_body(reflection, list(patterns or []))
+
+
+def render_strategy(strategy: Strategy, is_placeholder: bool) -> str:
+    """Standalone markdown for ``ideate strategy``: banner, heading and the plan rows."""
+    lines = banner_lines(is_placeholder) + ["# Strategy", ""]
+    lines += [f"- {label}: {value}" for label, value in strategy_rows(strategy) if value]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def strategy_dict(strategy: Strategy, is_placeholder: bool) -> dict:
+    """JSON-ready dict for ``ideate strategy --json`` (with ``placeholder_notice`` under the mock)."""
+    d = {"strategy": strategy.to_dict(), "is_placeholder": is_placeholder}
+    if is_placeholder:
+        d["placeholder_notice"] = PLACEHOLDER_BANNER
+    return d
+
+
+def render_reflection(reflection: RunReflection, patterns: list[MetaPattern], is_placeholder: bool) -> str:
+    """Standalone markdown for ``ideate reflect``: banner, run line and the learned block."""
+    lines = banner_lines(is_placeholder) + [
+        f"# What the system learned: {reflection.theme}",
+        "",
+        f"Run `{reflection.run_id}` · {reflection.created_at} · provider {reflection.provider}",
+        "",
+    ]
+    lines += learned_body(reflection, list(patterns))
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def reflection_dict(reflection: RunReflection, patterns: list[MetaPattern], is_placeholder: bool) -> dict:
+    """JSON-ready dict for ``ideate reflect --json`` (with ``placeholder_notice`` under the mock)."""
+    d = {
+        "reflection": reflection.to_dict(),
+        "meta_patterns": [p.to_dict() for p in patterns],
+        "is_placeholder": is_placeholder,
+    }
+    if is_placeholder:
+        d["placeholder_notice"] = PLACEHOLDER_BANNER
+    return d
+
+
 # --------------------------------------------------------------------------- the report
 def _build_this(result: IdeationResult, proposal: Proposal, top: Idea | None) -> list[str]:
     lines = ["## 1. Build this", ""]
@@ -220,8 +332,12 @@ def _trace_summary(trace: list[TraceStep]) -> list[str]:
     return lines
 
 
-def render_markdown(result: IdeationResult) -> str:
-    """The full markdown report; under the mock the first line is the placeholder banner."""
+def render_markdown(result: IdeationResult, meta_patterns: list[MetaPattern] | None = None) -> str:
+    """The full markdown report; under the mock the first line is the placeholder banner.
+
+    ``meta_patterns`` are the meta-patterns this run wrote (the result does not carry them); they
+    appear in section 10, which is omitted entirely when no reflector ran.
+    """
     proposal = result.proposal if result.proposal is not None else Proposal()
     by_idea, by_verdict = _idea_map(result.ideas), _verdict_map(result.verdicts)
     top = by_idea.get(result.ranking[0]) if result.ranking else None
@@ -234,6 +350,9 @@ def render_markdown(result: IdeationResult) -> str:
         f"{c.hours}h · team of {c.team_size} · {result.iterations} idea round(s) · {result.retrieval_rounds} retrieval round(s)",
         "",
     ]
+    strategy = strategy_section(result.strategy)
+    if strategy:
+        lines += strategy + [""]
     lines += _build_this(result, proposal, top) + [""]
     lines += ["## 2. First hour", ""] + _numbered(proposal.first_hour_plan) + [""]
     lines += ["## 3. Plan", "", "### Milestones", ""] + _bullets(proposal.milestones) + [""]
@@ -252,6 +371,9 @@ def render_markdown(result: IdeationResult) -> str:
     lines += ["## 8. Knowledge gaps and sources cited", "", "### Knowledge gaps", ""] + _bullets(result.coverage_gaps) + [""]
     lines += _sources_cited(result) + [""]
     lines += _trace_summary(result.trace)
+    learned = learned_section(result.reflection, meta_patterns)
+    if learned:
+        lines += [""] + learned
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ideate.models import Document
 
-CORPUS_KINDS: tuple[str, ...] = ("guidance", "data-source", "archetype", "antipattern", "event", "evidence")
+CORPUS_KINDS: tuple[str, ...] = ("guidance", "data-source", "archetype", "antipattern", "event", "evidence", "meta", "memory-source", "rules")
 DEFAULT_KIND = "guidance"
 _TEXT_SUFFIXES = {".md", ".txt"}
 _HEADING = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)

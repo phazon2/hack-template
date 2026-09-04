@@ -181,10 +181,10 @@ def test_index_prints_stats_to_stderr_only(cli_env, tmp_path):
     proc = run_cli(["index"], cli_env, tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
-    assert "index rebuilt" in proc.stderr and "12 docs" in proc.stderr
+    assert "index rebuilt" in proc.stderr and "20 docs" in proc.stderr
     assert (Path(cli_env["IDEATE_INDEX_DIR"]) / "vectors.json").exists()
     proc = run_cli(["index"], cli_env, tmp_path)
-    assert proc.returncode == 0 and "index rebuilt" not in proc.stderr and "12 docs" in proc.stderr
+    assert proc.returncode == 0 and "index rebuilt" not in proc.stderr and "20 docs" in proc.stderr
     proc = run_cli(["index", "--force"], cli_env, tmp_path)
     assert proc.returncode == 0 and "index rebuilt" in proc.stderr
 
@@ -261,3 +261,178 @@ def test_probe_without_credentials_is_a_do_it_myself_blocker(tmp_path, monkeypat
     assert lines[-2] == "blocker (do-it-myself): no Anthropic credentials found: the SDK could not resolve an authentication method"
     assert lines[-1] == f"  fix: {CREDENTIALS_HINT}"
     assert not (tmp_path / "receipts").exists()
+
+
+# --------------------------------------------------------------------------- meta layer (DESIGN-META §18.6)
+RULES_TEXT = (
+    "# Team operating rules\n\n"
+    "Ship a public URL before hour nine of the hackathon. Never drive a signup, 2FA or SSO flow: "
+    "the human creates every account in five minutes on a phone.\n\n"
+    "Mock output is never evidence. A receipt only counts when a real probe produced it.\n"
+)
+RULES_THEME = "public URL deploy rules and account signup for a hackathon team"
+
+
+def write_rules(tmp_path: Path, text: str = RULES_TEXT) -> Path:
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def meta_records(env: dict) -> list[dict]:
+    path = Path(env["IDEATE_META_PATH"])
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def test_ingest_then_meta_sources_then_a_run_retrieves_it(cli_env, tmp_path):
+    rules = write_rules(tmp_path)
+    proc = run_cli(["ingest", str(rules), "--reindex"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    source_id = proc.stdout.strip()
+    assert source_id.startswith("src-") and proc.stdout == source_id + "\n"
+    assert f"ingested {rules}: rules, 1 record(s), 1 document(s)" in proc.stderr
+    assert "index rebuilt" in proc.stderr
+
+    proc = run_cli(["meta", "--sources"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1 and lines[0].startswith(source_id)
+    assert "rules" in lines[0] and str(rules) in lines[0] and "CLAUDE.md" in lines[0]
+
+    proc = run_cli(["run", RULES_THEME, "--json", "-"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    knowledge = [rc["chunk"]["id"] for rc in json.loads(proc.stdout)["knowledge"]]
+    assert any(cid.startswith(source_id) for cid in knowledge), knowledge
+
+
+def test_ingest_unchanged_is_a_no_op_that_exits_zero(cli_env, tmp_path):
+    rules = write_rules(tmp_path)
+    first = run_cli(["ingest", str(rules)], cli_env, tmp_path)
+    assert first.returncode == 0, first.stderr
+    assert "ingested" in first.stderr and "run 'ideate index'" in first.stderr
+    second = run_cli(["ingest", str(rules)], cli_env, tmp_path)
+    assert second.returncode == 0, second.stderr
+    assert "unchanged" in second.stderr and second.stdout == first.stdout
+    assert len([r for r in meta_records(cli_env) if r["type"] == "memory_source"]) == 1
+
+    rules.write_text(RULES_TEXT + "\nAlways name a blocker config-fixable or do-it-myself.\n", encoding="utf-8")
+    third = run_cli(["ingest", str(rules)], cli_env, tmp_path)
+    assert third.returncode == 0 and "ingested" in third.stderr and third.stdout == first.stdout
+    assert len([r for r in meta_records(cli_env) if r["type"] == "memory_source"]) == 1
+
+
+def test_ingest_an_unsupported_path_exits_1(cli_env, tmp_path):
+    weird = tmp_path / "notes.bin"
+    weird.write_text("x")
+    proc = run_cli(["ingest", str(weird)], cli_env, tmp_path)
+    assert proc.returncode == 1 and proc.stdout == ""
+    assert proc.stderr.startswith("error: ") and "notes.bin" in proc.stderr
+
+
+def test_ingesting_new_material_invalidates_the_index(cli_env, tmp_path):
+    assert run_cli(["index"], cli_env, tmp_path).returncode == 0
+    assert "index rebuilt" not in run_cli(["index"], cli_env, tmp_path).stderr
+    assert run_cli(["ingest", str(write_rules(tmp_path))], cli_env, tmp_path).returncode == 0
+    proc = run_cli(["index"], cli_env, tmp_path)
+    assert proc.returncode == 0 and "index rebuilt" in proc.stderr and "21 docs" in proc.stderr
+
+
+def test_strategy_prints_a_watermarked_plan(cli_env, tmp_path):
+    proc = run_cli(["strategy", THEME, "--hours", "36", "--criteria", "innovation:60,demo:40"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines[0] == BANNER_LINE and lines[2] == "# Strategy"
+    assert any(line.startswith("- Problem type: ") for line in lines)
+    assert any(line.startswith("- Emphasised techniques: ") for line in lines)
+    assert any(line.startswith("- Why: ") for line in lines)
+    assert PLACEHOLDER_BANNER in proc.stderr
+    assert run_dirs(cli_env) == [] and not Path(cli_env["IDEATE_META_PATH"]).exists()
+
+
+def test_strategy_json_to_stdout(cli_env, tmp_path):
+    proc = run_cli(["strategy", THEME, "--json", "-", "--prefer", "python"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["is_placeholder"] is True and data["placeholder_notice"] == PLACEHOLDER_BANNER
+    plan = data["strategy"]
+    assert 2 <= len(plan["emphasis_techniques"]) <= 4 and plan["problem_type"]
+    assert all(0.5 <= m <= 2.0 for m in plan["rubric_emphasis"].values())
+
+
+def test_reflect_on_a_saved_run(cli_env, tmp_path):
+    proc = run_cli(["run", THEME, "--json", "-", "--no-reflector"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["reflection"] is None and meta_records(cli_env) == []
+
+    proc = run_cli(["reflect", "--run", result["run_id"]], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines()[0] == BANNER_LINE
+    assert f"# What the system learned: {THEME}" in proc.stdout
+    assert "### Process changes" in proc.stdout and "### Meta-patterns written" in proc.stdout
+    assert f"reflection for run {result['run_id']} saved to" in proc.stderr
+    records = meta_records(cli_env)
+    reflections = [r for r in records if r["type"] == "reflection"]
+    assert len(reflections) == 1 and reflections[0]["run_id"] == result["run_id"]
+    assert all(r["provider"] == "mock" for r in records)
+
+    proc = run_cli(["reflect", "--run", "nope"], cli_env, tmp_path)
+    assert proc.returncode == 1 and "run 'nope' not found" in proc.stderr
+
+
+def test_reflect_json_and_meta_listing(cli_env, tmp_path):
+    result = json.loads(run_cli(["run", THEME, "--json", "-"], cli_env, tmp_path).stdout)
+    proc = run_cli(["reflect", "--run", result["run_id"], "--json", "-"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["reflection"]["run_id"] == result["run_id"] and data["is_placeholder"] is True
+    assert all(p["source_run_id"] == result["run_id"] for p in data["meta_patterns"])
+
+    proc = run_cli(["meta"], cli_env, tmp_path)
+    assert proc.returncode == 0 and proc.stdout == ""
+    assert "no meta-patterns (pass --include-mock" in proc.stderr
+
+    proc = run_cli(["meta", "--include-mock"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines and all(line.startswith("[mock] meta-") for line in lines)
+    assert all("conf 0." in line and "seen " in line for line in lines)
+
+    proc = run_cli(["meta", "--include-mock", "--scope", "global"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert all("  global " in line for line in proc.stdout.splitlines())
+
+    kinds = {line.split()[2] for line in lines}
+    for kind in ("strategy", "process", "pitfall"):
+        proc = run_cli(["meta", "--include-mock", "--kind", kind], cli_env, tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert all(f"  {kind} " in line for line in proc.stdout.splitlines())
+        assert bool(proc.stdout.splitlines()) == (kind in kinds)
+
+
+def test_run_without_the_meta_layer_matches_the_baseline_trace(cli_env, tmp_path):
+    proc = run_cli(["run", THEME, "--json", "-", "--no-strategist", "--no-reflector"], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["strategy"] is None and data["reflection"] is None
+    assert data["settings"]["strategist"] is False and data["settings"]["reflector"] is False
+    personas = len(data["settings"]["judge_personas"])
+    assert len(data["trace"]) == (
+        1 + data["retrieval_rounds"] + 1 + data["iterations"] * (1 + personas) + 1
+    )
+    assert not any(t["agent"] in ("strategist", "reflector") for t in data["trace"])
+    assert meta_records(cli_env) == []
+    report = (run_dirs(cli_env)[0] / "report.md").read_text()
+    assert "## 1a. Strategy" not in report and "## 10. What the system learned" not in report
+
+
+def test_run_report_carries_both_meta_sections(cli_env, tmp_path):
+    proc = run_cli(["run", THEME], cli_env, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "## 1a. Strategy" in proc.stdout and "## 10. What the system learned" in proc.stdout
+    assert proc.stdout.index("## 1a. Strategy") < proc.stdout.index("## 1. Build this")
+    assert proc.stdout.index("## 9. Trace summary") < proc.stdout.index("## 10. What the system learned")
+    assert "reflection recorded in" in proc.stderr
+    report = (run_dirs(cli_env)[0] / "report.md").read_text()
+    assert report == proc.stdout
+    assert "### Meta-patterns written" in report and "- [" in report[report.index("### Meta-patterns written"):]

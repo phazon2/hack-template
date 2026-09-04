@@ -17,9 +17,20 @@ from ideate.agents.graph import GraphError
 from ideate.config import Settings, SettingsError
 from ideate.llm.base import LLMConfigError, LLMError, LLMRefusal, LLMTransientError
 from ideate.llm.factory import resolve_provider
+from ideate.meta.ingest import ingest_into
 from ideate.models import HackathonConstraints, Idea, Outcome
 from ideate.pipeline import RESULT_FILE, IdeationSystem, load_result
-from ideate.report import PLACEHOLDER_BANNER, judgement_dict, render_json, render_judgement, render_markdown
+from ideate.report import (
+    PLACEHOLDER_BANNER,
+    judgement_dict,
+    reflection_dict,
+    render_json,
+    render_judgement,
+    render_markdown,
+    render_reflection,
+    render_strategy,
+    strategy_dict,
+)
 
 MOCK_PROVIDER = "mock"
 STDOUT = "-"
@@ -75,6 +86,14 @@ def _add_constraint_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--criteria", help='judging criteria, e.g. "innovation:40,impact:30,demo:30"')
 
 
+def _add_theme_options(p: argparse.ArgumentParser) -> None:
+    """The free-text constraint flags shared by ``run`` and ``strategy``."""
+    p.add_argument("--prefer", help="comma-separated technology preferences")
+    p.add_argument("--avoid", help="comma-separated things to avoid")
+    p.add_argument("--tracks", help="comma-separated event tracks")
+    p.add_argument("--notes-file", help="file whose text becomes the constraints notes")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The argparse parser with every subcommand and flag."""
     parser = argparse.ArgumentParser(prog="ideate", description="Hackathon ideation system.")
@@ -90,11 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="generate, judge and refine ideas for a theme")
     p_run.add_argument("theme")
     _add_constraint_options(p_run)
-    p_run.add_argument("--prefer", help="comma-separated technology preferences")
-    p_run.add_argument("--avoid", help="comma-separated things to avoid")
-    p_run.add_argument("--tracks", help="comma-separated event tracks")
-    p_run.add_argument("--notes-file", help="file whose text becomes the constraints notes")
+    _add_theme_options(p_run)
     p_run.add_argument("--ideas", type=int, help="ideas per round (default: IDEATE_IDEAS_PER_ROUND or 8)")
+    p_run.add_argument("--no-strategist", action="store_true", help="skip the strategist and use the default process")
+    p_run.add_argument("--no-reflector", action="store_true", help="skip the reflector and write nothing to meta memory")
     p_run.add_argument("--out", metavar="FILE", help="write the markdown report here")
     p_run.add_argument("--json", metavar="FILE", help="write the JSON result here ('-' for stdout)")
     p_run.add_argument("--reranker", choices=["lexical", "llm", "none"], help="retrieval reranker")
@@ -123,6 +141,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_memory.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
     p_memory.set_defaults(handler=cmd_memory)
 
+    p_ingest = sub.add_parser("ingest", help="normalise and register an external memory source")
+    p_ingest.add_argument("path", metavar="PATH")
+    p_ingest.add_argument("--kind", choices=["external", "ideate"], default="external", help="how to read the source")
+    p_ingest.add_argument("--title", help="title for the source (default: the file or directory name)")
+    p_ingest.add_argument("--reindex", action="store_true", help="rebuild the index so the material is retrievable now")
+    _add_corpus_options(p_ingest)
+    p_ingest.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
+    p_ingest.set_defaults(handler=cmd_ingest)
+
+    p_strategy = sub.add_parser("strategy", help="plan how to approach a theme (one call, no ideas)")
+    p_strategy.add_argument("theme")
+    _add_constraint_options(p_strategy)
+    _add_theme_options(p_strategy)
+    p_strategy.add_argument("--json", metavar="FILE", help="write the JSON plan here ('-' for stdout)")
+    _add_corpus_options(p_strategy)
+    _add_provider_options(p_strategy)
+    p_strategy.set_defaults(handler=cmd_strategy)
+
+    p_reflect = sub.add_parser("reflect", help="reflect on a saved run and record what the system learned")
+    p_reflect.add_argument("--run", metavar="RUN_ID", required=True, help="the saved run to reflect on")
+    p_reflect.add_argument("--json", metavar="FILE", help="write the JSON reflection here ('-' for stdout)")
+    _add_corpus_options(p_reflect)
+    _add_provider_options(p_reflect)
+    p_reflect.set_defaults(handler=cmd_reflect)
+
+    p_meta = sub.add_parser("meta", help="list meta-patterns or ingested memory sources")
+    p_meta.add_argument("--kind", choices=["strategy", "process", "pitfall"])
+    p_meta.add_argument("--scope", metavar="S", help="'global' or a problem type")
+    p_meta.add_argument("--sources", action="store_true", help="list ingested memory sources instead")
+    p_meta.add_argument("--include-mock", action="store_true", help="also list rows produced under the mock")
+    p_meta.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
+    p_meta.set_defaults(handler=cmd_meta)
+
     p_probe = sub.add_parser("probe", help="make one real call and write a receipt")
     _add_provider_options(p_probe)
     p_probe.set_defaults(handler=cmd_probe)
@@ -140,6 +191,8 @@ def settings_from(args: argparse.Namespace) -> Settings:
         "bundled_corpus": False if getattr(args, "no_bundled_corpus", False) else None,
         "index_dir": getattr(args, "index", None),
         "ideas_per_round": getattr(args, "ideas", None),
+        "strategist": False if getattr(args, "no_strategist", False) else None,
+        "reflector": False if getattr(args, "no_reflector", False) else None,
     }
     return Settings.from_env(overrides)
 
@@ -179,15 +232,95 @@ def cmd_run(args: argparse.Namespace) -> int:
     system = IdeationSystem(settings)
     result = system.ideate(args.theme, constraints_from(args))
     run_dir = system.save_run(result)
+    patterns = system.meta_patterns_for(result.run_id, include_mock=result.is_placeholder)
     notice(f"run {result.run_id} saved to {run_dir}")
+    if result.reflection is not None:
+        notice(f"reflection recorded in {settings.meta_path} ({len(patterns)} new meta-pattern(s))")
     if result.is_placeholder:
         notice(PLACEHOLDER_BANNER)
     if args.out:
-        write_text(args.out, render_markdown(result))
+        write_text(args.out, render_markdown(result, patterns))
     if args.json:
         write_text(args.json, render_json(result))
     if not args.out and not args.json:
-        sys.stdout.write(render_markdown(result))
+        sys.stdout.write(render_markdown(result, patterns))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- meta layer (DESIGN-META §18.6)
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """``ideate ingest``: normalise and register a memory source; the source id goes to stdout."""
+    settings = settings_from(args)
+    system = IdeationSystem(settings)
+    path = Path(args.path)
+    before = system.meta.source_for(str(path))
+    source, _ = ingest_into(path, system.meta, kind=args.kind, title=args.title)
+    unchanged = before is not None and before.fingerprint == source.fingerprint
+    notice(
+        f"{'unchanged' if unchanged else 'ingested'} {source.path}: {source.format}, "
+        f"{source.n_records} record(s), {source.n_documents} document(s)"
+    )
+    if args.reindex:
+        system.build_index(force=True)
+    elif not unchanged:
+        notice("run 'ideate index' (or pass --reindex) to make this retrievable")
+    print(source.id)
+    return EXIT_OK
+
+
+def cmd_strategy(args: argparse.Namespace) -> int:
+    """``ideate strategy``: run the strategist alone and print the plan."""
+    settings = settings_from(args)
+    strategy = IdeationSystem(settings).strategy(args.theme, constraints_from(args))
+    is_placeholder = resolve_provider(settings) == MOCK_PROVIDER
+    if is_placeholder:
+        notice(PLACEHOLDER_BANNER)
+    if args.json:
+        write_text(args.json, json.dumps(strategy_dict(strategy, is_placeholder), indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(render_strategy(strategy, is_placeholder))
+    return EXIT_OK
+
+
+def cmd_reflect(args: argparse.Namespace) -> int:
+    """``ideate reflect``: run the reflector alone over a saved run and record what it learned."""
+    settings = settings_from(args)
+    system = IdeationSystem(settings)
+    reflection = system.reflect(args.run)
+    is_placeholder = reflection.provider == MOCK_PROVIDER
+    patterns = system.meta_patterns_for(reflection.run_id, include_mock=is_placeholder)
+    notice(f"reflection for run {reflection.run_id} saved to {settings.meta_path} ({len(patterns)} new meta-pattern(s))")
+    if is_placeholder:
+        notice(PLACEHOLDER_BANNER)
+    if args.json:
+        write_text(args.json, json.dumps(reflection_dict(reflection, patterns, is_placeholder), indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(render_reflection(reflection, patterns, is_placeholder))
+    return EXIT_OK
+
+
+def cmd_meta(args: argparse.Namespace) -> int:
+    """``ideate meta``: list meta-patterns, or ingested memory sources with ``--sources``."""
+    settings = settings_from(args)
+    store = IdeationSystem(settings).meta
+    if args.sources:
+        sources = store.sources()
+        if not sources:
+            notice(f"no ingested memory sources in {settings.meta_path}")
+            return EXIT_OK
+        for s in sources:
+            print(f"{s.id}  {s.kind:<8}  {s.format:<13}  {s.n_documents:>4} doc(s)  {s.title}  {s.path}")
+        return EXIT_OK
+    patterns = store.meta_patterns(kind=args.kind, scope=args.scope, include_mock=args.include_mock)
+    if not patterns:
+        notice("no meta-patterns" + ("" if args.include_mock else " (pass --include-mock to list mock meta-patterns)"))
+        return EXIT_OK
+    for p in patterns:
+        mark = "[mock] " if p.provider == MOCK_PROVIDER else ""
+        print(
+            f"{mark}{p.id}  {p.kind:<8}  {p.scope:<11}  conf {p.confidence:.2f}  seen {p.observations}  "
+            f"{p.text}  (tags: {', '.join(p.tags)})"
+        )
     return EXIT_OK
 
 

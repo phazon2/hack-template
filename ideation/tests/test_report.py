@@ -14,19 +14,27 @@ from ideate.models import (
     Idea,
     IdeaEvaluation,
     IdeationResult,
+    MetaPattern,
     PanelVerdict,
     Proposal,
     ResearchFindings,
     RetrievedChunk,
+    RunReflection,
+    Strategy,
     TraceStep,
 )
 from ideate.report import (
+    NO_NEW_PATTERNS,
     PLACEHOLDER_BANNER,
     judgement_dict,
+    reflection_dict,
     render_json,
     render_judgement,
     render_markdown,
     render_ranking_table,
+    render_reflection,
+    render_strategy,
+    strategy_dict,
 )
 
 BANNER_LINE = "> **PROVIDER: mock — placeholder content, not evidence**"
@@ -236,3 +244,157 @@ def test_render_judgement_and_dict(result):
     assert d["ranking"] == result.ranking and d["placeholder_notice"] == PLACEHOLDER_BANNER
     assert [v["idea_id"] for v in d["verdicts"]] == ["idea-1-1", "idea-1-2", "idea-1-3"]
     assert "placeholder_notice" not in judgement_dict(result.ideas, result.verdicts, result.ranking, False)
+
+
+# --------------------------------------------------------------------------- meta layer (DESIGN-META §18.7)
+def make_strategy() -> Strategy:
+    return Strategy(
+        framing="Treat this as a sensing problem: the data exists, the reading of it does not.",
+        problem_type="data",
+        emphasis_techniques=["analogical", "constraint_removal"],
+        retrieval_angles=["river gauge feeds", "flood insurance payouts"],
+        rubric_emphasis={"novelty": 1.5, "feasibility": 0.5},
+        rounds=2,
+        watch_for=["a dashboard with no decision", "a demo that needs live weather"],
+        rationale="the corpus has three data-source documents and no archetype for sensing",
+        source_patterns=["meta-abc123456789"],
+    )
+
+
+def make_reflection() -> RunReflection:
+    return RunReflection(
+        run_id="abc123",
+        theme="AI for climate resilience",
+        created_at="2026-01-02T03:04:05+00:00",
+        provider="mock",
+        what_worked=["the pinned data-source chunks reached every idea"],
+        what_failed=["the second creativity round added no strong idea"],
+        process_changes=["stop at one round when round one already has three strong ideas"],
+        signal_quality="retrieval changed the ideas: every idea cites a data source",
+        winning_technique="analogical",
+        judge_disagreement="agreement was 0.90 on every idea, so the panel added little spread",
+        wasted_effort=["the second retrieval round added four chunks nobody cited"],
+    )
+
+
+def make_patterns() -> list[MetaPattern]:
+    return [
+        MetaPattern(kind="process", text="one creativity round is enough when three ideas clear the bar",
+                    tags=["loop", "cost"], scope="global", source_run_id="abc123", provider="mock",
+                    confidence=0.7, observations=2),
+        MetaPattern(kind="pitfall", text="a dashboard without a decision scores low on demoability",
+                    scope="data", source_run_id="abc123", provider="mock"),
+    ]
+
+
+def test_strategy_section_sits_between_the_header_and_build_this(result):
+    result.strategy = make_strategy()
+    md = render_markdown(result)
+    assert md.index(BANNER_LINE) < md.index("## 1a. Strategy") < md.index("## 1. Build this")
+    section = md[md.index("## 1a. Strategy"): md.index("## 1. Build this")]
+    assert "- Problem type: data" in section
+    assert "- Framing: Treat this as a sensing problem" in section
+    assert "- Emphasised techniques: analogical, constraint_removal" in section
+    assert "- Retrieval angles: river gauge feeds, flood insurance payouts" in section
+    assert "- Rubric emphasis: feasibility x0.5, novelty x1.5" in section
+    assert "- Planned rounds: 2" in section
+    assert "- Watching for: a dashboard with no decision, a demo that needs live weather" in section
+    assert "- Why: the corpus has three data-source documents" in section
+
+
+def test_strategy_section_is_omitted_without_a_strategy(result):
+    assert result.strategy is None
+    md = render_markdown(result)
+    assert "## 1a. Strategy" not in md and md.index("# Ideation report") < md.index("## 1. Build this")
+
+
+def test_strategy_section_falls_back_for_empty_fields(result):
+    result.strategy = Strategy()
+    section = render_markdown(result)
+    section = section[section.index("## 1a. Strategy"): section.index("## 1. Build this")]
+    assert "- Problem type: unclear" in section and "- Framing: none stated" in section
+    assert "- Emphasised techniques: none" in section and "- Watching for: none" in section
+    assert "- Planned rounds: the settings default" in section and "- Why: none given" in section
+    assert "- Retrieval angles:" not in section and "- Rubric emphasis:" not in section
+
+
+def test_learned_section_is_last_and_lists_the_patterns_written(result):
+    result.reflection = make_reflection()
+    md = render_markdown(result, make_patterns())
+    assert md.index("## 9. Trace summary") < md.index("## 10. What the system learned")
+    section = md[md.index("## 10. What the system learned"):]
+    assert "- the pinned data-source chunks reached every idea" in section
+    assert "- the second creativity round added no strong idea" in section
+    assert "- stop at one round when round one already has three strong ideas" in section
+    assert "- Signal quality: retrieval changed the ideas" in section
+    assert "- Winning technique: analogical" in section
+    assert "- Wasted effort: the second retrieval round added four chunks nobody cited" in section
+    assert (
+        "- [process|global] one creativity round is enough when three ideas clear the bar "
+        "(confidence 0.70, observations 2, tags: loop, cost)"
+    ) in section
+    assert "- [pitfall|data] a dashboard without a decision scores low on demoability (confidence 0.50, observations 1)" in section
+
+
+def test_learned_section_is_omitted_without_a_reflection(result):
+    assert result.reflection is None
+    assert "## 10. What the system learned" not in render_markdown(result, make_patterns())
+
+
+def test_learned_section_says_none_new_when_nothing_was_written(result):
+    result.reflection = make_reflection()
+    md = render_markdown(result)
+    assert NO_NEW_PATTERNS in md[md.index("### Meta-patterns written"):]
+
+
+def test_learned_section_survives_an_empty_reflection(result):
+    result.reflection = RunReflection(run_id="abc123")
+    section = render_markdown(result, [])[render_markdown(result, []).index("## 10."):]
+    assert "### What worked\n\n- none" in section and "### Signals" not in section
+    assert section.endswith("\n") and not section.endswith("\n\n")
+
+
+def test_render_strategy_standalone_is_watermarked_under_the_mock():
+    strategy = make_strategy()
+    md = render_strategy(strategy, True)
+    assert md.splitlines()[0] == BANNER_LINE and md.splitlines()[2] == "# Strategy"
+    assert "- Problem type: data" in md and md.endswith("\n")
+    assert PLACEHOLDER_BANNER not in render_strategy(strategy, False)
+    assert render_strategy(strategy, False).splitlines()[0] == "# Strategy"
+
+
+def test_strategy_dict_round_trips_with_the_notice():
+    strategy = make_strategy()
+    d = strategy_dict(strategy, True)
+    assert d["placeholder_notice"] == PLACEHOLDER_BANNER and d["is_placeholder"] is True
+    assert Strategy.from_dict(d["strategy"]).to_dict() == strategy.to_dict()
+    assert "placeholder_notice" not in strategy_dict(strategy, False)
+
+
+def test_render_reflection_standalone():
+    reflection, patterns = make_reflection(), make_patterns()
+    md = render_reflection(reflection, patterns, True)
+    lines = md.splitlines()
+    assert lines[0] == BANNER_LINE
+    assert lines[2] == "# What the system learned: AI for climate resilience"
+    assert lines[4] == "Run `abc123` · 2026-01-02T03:04:05+00:00 · provider mock"
+    assert "### Meta-patterns written" in md and "- [pitfall|data]" in md
+    assert PLACEHOLDER_BANNER not in render_reflection(reflection, patterns, False)
+
+
+def test_reflection_dict_round_trips_with_the_notice():
+    reflection, patterns = make_reflection(), make_patterns()
+    d = reflection_dict(reflection, patterns, True)
+    assert d["placeholder_notice"] == PLACEHOLDER_BANNER
+    assert RunReflection.from_dict(d["reflection"]).to_dict() == reflection.to_dict()
+    assert [MetaPattern.from_dict(p).id for p in d["meta_patterns"]] == [p.id for p in patterns]
+    assert "placeholder_notice" not in reflection_dict(reflection, patterns, False)
+
+
+def test_both_meta_sections_together_keep_the_baseline_headings(result):
+    result.strategy = make_strategy()
+    result.reflection = make_reflection()
+    md = render_markdown(result, make_patterns())
+    positions = [md.index(h) for h in ["## 1a. Strategy", *SECTION_HEADINGS, "## 10. What the system learned"]]
+    assert positions == sorted(positions)
+    assert md.endswith("\n") and not md.endswith("\n\n")

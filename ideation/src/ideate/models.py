@@ -28,7 +28,20 @@ TECHNIQUES: tuple[str, ...] = (
     "direct",
 )
 BLOCKER_KINDS: tuple[str, ...] = ("config-fixable", "do-it-myself", "genuinely human-only")
-CHUNK_KINDS: tuple[str, ...] = ("guidance", "data-source", "archetype", "antipattern", "event", "evidence", "memory")
+CHUNK_KINDS: tuple[str, ...] = (
+    "guidance",
+    "data-source",
+    "archetype",
+    "antipattern",
+    "event",
+    "evidence",
+    "memory",
+    "meta",
+    "memory-source",
+    "rules",
+)
+PROBLEM_TYPES: tuple[str, ...] = ("greenfield", "constrained", "integration", "data", "social", "unclear")
+META_PATTERN_KINDS: tuple[str, ...] = ("strategy", "process", "pitfall")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -291,6 +304,10 @@ class IdeationState(Model):
     coverage_gaps: list[str] = field(default_factory=list)
     retrieve_more_added: int = 0
     visited: list[str] = field(default_factory=list)
+    strategy: "Strategy | None" = None
+    reflection: "RunReflection | None" = None
+    dropped_invalid: int = 0
+    dropped_duplicate: int = 0
 
     def verdict_for(self, idea_id: str) -> PanelVerdict | None:
         for v in self.verdicts:
@@ -328,6 +345,8 @@ class IdeationResult(Model):
     coverage_gaps: list[str] = field(default_factory=list)
     trace: list[TraceStep] = field(default_factory=list)
     is_placeholder: bool = False
+    strategy: "Strategy | None" = None
+    reflection: "RunReflection | None" = None
 
     def idea_for(self, idea_id: str) -> Idea | None:
         for i in self.ideas:
@@ -379,8 +398,119 @@ class Pattern(Model):
             self.id = f"pat-{sha256_hex(self.source_outcome_id + self.text)[:12]}"
 
 
+# --------------------------------------------------------------------------- meta layer
+@dataclass
+class Strategy(Model):
+    """How to approach one particular problem, decided before any idea exists (DESIGN-META §18.1)."""
+
+    framing: str = ""  # one paragraph: how to see this problem
+    problem_type: str = "unclear"  # one of PROBLEM_TYPES
+    emphasis_techniques: list[str] = field(default_factory=list)  # subset of TECHNIQUES, ordered, 2..4
+    retrieval_angles: list[str] = field(default_factory=list)  # extra query angles, 0..4
+    rubric_emphasis: dict = field(default_factory=dict)  # criterion name -> multiplier, 0.5..2.0
+    rounds: int = 0  # planned creativity rounds; 0 = use settings
+    watch_for: list[str] = field(default_factory=list)  # failure modes to avoid this run, 0..5
+    rationale: str = ""
+    source_patterns: list[str] = field(default_factory=list)  # MetaPattern ids that informed this
+
+    def sanitized(self, settings: Any, rubric: Any) -> "Strategy":
+        """Clamp every field into a safe range; returns a new Strategy and never mutates ``self``.
+
+        ``settings`` and ``rubric`` are duck-typed (``settings.max_iterations``, ``rubric.names()``)
+        so this module keeps its stdlib-only import rule (DESIGN §2.1).
+        """
+        problem_type = self.problem_type if self.problem_type in PROBLEM_TYPES else "unclear"
+
+        techniques: list[str] = []
+        for technique in self.emphasis_techniques:
+            if technique in TECHNIQUES and technique not in techniques:
+                techniques.append(technique)
+        techniques = techniques[:4] or list(TECHNIQUES[:3])
+
+        names = list(rubric.names())
+        emphasis: dict[str, float] = {}
+        for name, multiplier in self.rubric_emphasis.items():
+            if name not in names or isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)):
+                continue
+            emphasis[name] = float(min(2.0, max(0.5, multiplier)))
+
+        rounds = self.rounds
+        if rounds:
+            rounds = max(1, min(int(rounds), int(settings.max_iterations)))
+
+        return Strategy(
+            framing=self.framing,
+            problem_type=problem_type,
+            emphasis_techniques=techniques,
+            retrieval_angles=list(self.retrieval_angles[:4]),
+            rubric_emphasis=emphasis,
+            rounds=rounds,
+            watch_for=list(self.watch_for[:5]),
+            rationale=self.rationale,
+            source_patterns=list(self.source_patterns),
+        )
+
+
+@dataclass
+class RunReflection(Model):
+    """What one run taught the system about its own process."""
+
+    run_id: str
+    theme: str = ""
+    created_at: str = ""
+    provider: str = ""  # "mock" reflections are quarantined from real runs
+    what_worked: list[str] = field(default_factory=list)
+    what_failed: list[str] = field(default_factory=list)
+    process_changes: list[str] = field(default_factory=list)  # concrete changes to how the system runs
+    signal_quality: str = ""  # did the knowledge base actually help?
+    winning_technique: str = ""
+    judge_disagreement: str = ""
+    wasted_effort: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MetaPattern(Model):
+    """A reusable lesson about the system's own process, strengthened by repeated observation."""
+
+    kind: str  # one of META_PATTERN_KINDS
+    text: str
+    tags: list[str] = field(default_factory=list)
+    scope: str = "global"  # "global" or a PROBLEM_TYPES value
+    source_run_id: str = ""
+    id: str = ""
+    provider: str = ""  # "mock" patterns are quarantined from real runs
+    created_at: str = ""
+    confidence: float = 0.5
+    observations: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = f"meta-{sha256_hex(self.scope + '|' + self.text)[:12]}"
+
+
+@dataclass
+class MemorySource(Model):
+    """An ingested external memory source: where it came from and what it produced."""
+
+    id: str
+    path: str
+    title: str = ""
+    kind: str = "external"  # "ideate" | "external"
+    format: str = "markdown"  # markdown | jsonl | json | text | ideate-memory | conversation | rules
+    ingested_at: str = ""
+    fingerprint: str = ""  # sha256 of the normalised content
+    n_records: int = 0
+    n_documents: int = 0
+    notes: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = f"src-{sha256_hex(self.path)[:12]}"
+
+
 ALL_MODELS: tuple[type, ...] = (
     Document, Chunk, RetrievedChunk, HackathonConstraints, ResearchFindings, TechnicalAssessment,
     Idea, CriterionScore, IdeaEvaluation, PanelVerdict, Alternative, Proposal, TraceStep,
     IdeationState, IdeationResult, Outcome, Pattern,
+    Strategy, RunReflection, MetaPattern, MemorySource,
 )

@@ -24,6 +24,7 @@ def settings(tmp_path):
         memory_path=str(tmp_path / "memory.jsonl"),
         runs_dir=str(tmp_path / "runs"),
         receipts_dir=str(tmp_path / "receipts"),
+        meta_path=str(tmp_path / "meta.jsonl"),
     )
 
 
@@ -60,6 +61,7 @@ def cli_env(tmp_path):
         "IDEATE_MEMORY_PATH": str(tmp_path / "memory.jsonl"),
         "IDEATE_RUNS_DIR": str(tmp_path / "runs"),
         "IDEATE_RECEIPTS_DIR": str(tmp_path / "receipts"),
+        "IDEATE_META_PATH": str(tmp_path / "meta.jsonl"),
     }
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
