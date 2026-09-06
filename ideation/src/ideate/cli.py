@@ -19,6 +19,7 @@ from ideate.llm.base import LLMConfigError, LLMError, LLMRefusal, LLMTransientEr
 from ideate.llm.factory import resolve_provider
 from ideate.meta.charter import DEFAULT_CHARTER, load_charter, save_charter
 from ideate.meta.fetch import FetchError, fetch_arxiv, fetch_url, write_docs
+from ideate.meta.gallery import as_document, fetch_gallery, sweep
 from ideate.meta.gaps import collect_gaps, render_gaps
 from ideate.meta.ingest import ingest_into
 from ideate.meta.frames import FrameError, FramesToolMissing, extract_frames, render_index
@@ -215,6 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_frames.add_argument("--end", type=float, metavar="SEC", help="only up to this second")
     p_frames.add_argument("--width", type=int, default=512, metavar="PX")
     p_frames.set_defaults(handler=cmd_frames)
+
+    p_gallery = sub.add_parser("gallery", help="record hackathon winners (and their neighbours) as evidence")
+    p_gallery.add_argument("url", metavar="EVENT_URL", nargs="?", help="a Devpost event URL")
+    p_gallery.add_argument("--sweep", metavar="QUERY", help="discover ended events matching this instead")
+    p_gallery.add_argument("--pages", type=int, default=1, metavar="N", help="index pages to scan when sweeping")
+    p_gallery.add_argument("--limit", type=int, default=20, metavar="N", help="events to try when sweeping")
+    p_gallery.add_argument("--reindex", action="store_true", help="rebuild the index afterwards")
+    _add_corpus_options(p_gallery)
+    p_gallery.set_defaults(handler=cmd_gallery)
 
     p_gaps = sub.add_parser("gaps", help="what the knowledge base is missing, and the command to fill it")
     p_gaps.add_argument("--max", type=int, default=5, metavar="N", help="results per suggested fetch")
@@ -479,6 +489,37 @@ def cmd_frames(args: argparse.Namespace) -> int:
     )
     notice(f"extracted {len(frames)} frame(s) from {args.path} into {args.out}")
     sys.stdout.write(render_index(frames, Path(args.path).name) + "\n")
+    return EXIT_OK
+
+
+def cmd_gallery(args: argparse.Namespace) -> int:
+    """``ideate gallery``: winners beside their neighbours, from one event or a sweep."""
+    settings = settings_from(args)
+    system = IdeationSystem(settings)
+    if bool(args.url) == bool(args.sweep):
+        raise SettingsError("pass either an event URL or --sweep QUERY, not both and not neither")
+
+    if args.url:
+        galleries = [fetch_gallery(args.url)]
+        skipped: list[tuple[str, str]] = []
+    else:
+        galleries, skipped = sweep(args.sweep, pages=args.pages, limit=args.limit)
+        # A low hit rate is the normal case, so say it rather than looking like an empty result.
+        notice(f"{len(galleries)} of {len(galleries) + len(skipped)} event(s) had winners announced")
+        for title, reason in skipped[:5]:
+            notice(f"  skipped {title[:44]}: {reason}")
+
+    if not galleries:
+        notice("no galleries with announced winners; try another query or pass a known event URL")
+        return EXIT_OK
+    written = write_docs([as_document(g) for g in galleries], settings.fetched_dir, system.now())
+    for gallery, path in zip(galleries, written):
+        notice(f"{gallery.title[:48]}: {len(gallery.winners)} winner(s), {len(gallery.others)} other(s)")
+        print(path)
+    if args.reindex:
+        system.build_index(force=True)
+    else:
+        notice("run 'ideate index' (or pass --reindex) to make this retrievable")
     return EXIT_OK
 
 
