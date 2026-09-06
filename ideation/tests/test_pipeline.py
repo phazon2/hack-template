@@ -82,7 +82,11 @@ def test_e2e_default_mock(e2e):
     assert isinstance(result, IdeationResult)
     # Loop rule B now honours the strategist's planned rounds (DESIGN-META §18.3).
     assert 1 <= result.iterations <= settings.max_iterations
-    assert len(result.ideas) == settings.ideas_per_round * result.iterations
+    # Conservation law, not a raw count: every generated idea is either kept or dropped as a
+    # near-duplicate by the Jaccard filter, and how many collide depends on the generated text.
+    assert (
+        len(result.ideas) == settings.ideas_per_round * result.iterations - result.dropped_duplicate
+    )
     ids = [i.id for i in result.ideas]
     assert len(set(ids)) == len(ids)
     assert {v.idea_id for v in result.verdicts} == set(ids) and len(result.verdicts) == len(ids)

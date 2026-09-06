@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.resources
 import os
+from pathlib import Path
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -44,6 +45,8 @@ class Settings:
     runs_dir: str = ".ideate/runs"
     receipts_dir: str = ".ideate/receipts"
     meta_path: str = ".ideate/meta.jsonl"
+    charter_path: str = ".ideate/charter.md"
+    fetched_dir: str = ".ideate/fetched"
     strategist: bool = True
     reflector: bool = True
     meta_k: int = 6
@@ -102,7 +105,15 @@ class Settings:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def all_corpus_dirs(self) -> list[str]:
+        """Bundled corpus, anything fetched into ``fetched_dir``, then explicit ``--corpus`` dirs.
+
+        Fetched material is part of the corpus by construction: `ideate fetch` exists so the
+        system can fill its own gaps, and material that had to be wired in by hand would put
+        that decision straight back on the user.
+        """
         dirs = [bundled_corpus_dir()] if self.bundled_corpus else []
+        if self.fetched_dir and Path(self.fetched_dir).is_dir():
+            dirs.append(self.fetched_dir)
         return dirs + list(self.corpus_dirs)
 
 

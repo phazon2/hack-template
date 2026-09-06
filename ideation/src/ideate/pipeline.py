@@ -77,6 +77,8 @@ def result_from_state(
         proposal=state.proposal,
         iterations=state.iteration,
         retrieval_rounds=state.retrieval_rounds,
+        dropped_invalid=state.dropped_invalid,
+        dropped_duplicate=state.dropped_duplicate,
         coverage_gaps=list(state.coverage_gaps),
         trace=list(ctx.trace),
         is_placeholder=provider == MOCK_PROVIDER,

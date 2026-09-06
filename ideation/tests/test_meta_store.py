@@ -63,7 +63,7 @@ def test_chunk_kinds_and_new_tuples():
     for kind in ("meta", "memory-source", "rules"):
         assert kind in CHUNK_KINDS
     assert PROBLEM_TYPES == ("greenfield", "constrained", "integration", "data", "social", "unclear")
-    assert META_PATTERN_KINDS == ("strategy", "process", "pitfall")
+    assert META_PATTERN_KINDS == ("strategy", "process", "pitfall", "correction")
 
 
 def test_ids_are_content_addressed_and_stable():

@@ -17,8 +17,19 @@ from ideate.agents.graph import GraphError
 from ideate.config import Settings, SettingsError
 from ideate.llm.base import LLMConfigError, LLMError, LLMRefusal, LLMTransientError
 from ideate.llm.factory import resolve_provider
+from ideate.meta.charter import DEFAULT_CHARTER, load_charter, save_charter
+from ideate.meta.fetch import FetchError, fetch_arxiv, fetch_url, write_docs
+from ideate.meta.gaps import collect_gaps, render_gaps
 from ideate.meta.ingest import ingest_into
-from ideate.models import HackathonConstraints, Idea, Outcome
+from ideate.models import (
+    HUMAN_CONFIDENCE,
+    HUMAN_PROVIDER,
+    META_PATTERN_KINDS,
+    HackathonConstraints,
+    Idea,
+    MetaPattern,
+    Outcome,
+)
 from ideate.pipeline import RESULT_FILE, IdeationSystem, load_result
 from ideate.report import (
     PLACEHOLDER_BANNER,
@@ -174,6 +185,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_meta.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
     p_meta.set_defaults(handler=cmd_meta)
 
+    p_note = sub.add_parser("note", help="file a correction or lesson instantly (no LLM call)")
+    p_note.add_argument("text", metavar="TEXT")
+    p_note.add_argument("--kind", choices=list(META_PATTERN_KINDS), default="correction")
+    p_note.add_argument("--tags", default="", help="comma-separated tags")
+    p_note.add_argument("--scope", default="global", help="'global' or a problem type")
+    p_note.set_defaults(handler=cmd_note)
+
+    p_charter = sub.add_parser("charter", help="show or replace the standing charter")
+    p_charter.add_argument("--set", metavar="FILE", dest="set_file", help="replace the charter with this file")
+    p_charter.add_argument("--init", action="store_true", help="write the bundled default charter so you can edit it")
+    p_charter.set_defaults(handler=cmd_charter)
+
+    p_fetch = sub.add_parser("fetch", help="fetch papers or a page into the corpus as cited evidence")
+    p_fetch.add_argument("url", metavar="URL", nargs="?", help="an http(s) page to fetch")
+    p_fetch.add_argument("--arxiv", metavar="QUERY", help="search arXiv instead of fetching a URL")
+    p_fetch.add_argument("--max", type=int, default=5, metavar="N", help="arXiv results (default 5)")
+    p_fetch.add_argument("--reindex", action="store_true", help="rebuild the index so it is retrievable now")
+    _add_corpus_options(p_fetch)
+    p_fetch.set_defaults(handler=cmd_fetch)
+
+    p_gaps = sub.add_parser("gaps", help="what the knowledge base is missing, and the command to fill it")
+    p_gaps.add_argument("--max", type=int, default=5, metavar="N", help="results per suggested fetch")
+    p_gaps.add_argument("--include-placeholder", action="store_true", help="also use mock runs' gaps")
+    p_gaps.set_defaults(handler=cmd_gaps)
+
     p_probe = sub.add_parser("probe", help="make one real call and write a receipt")
     _add_provider_options(p_probe)
     p_probe.set_defaults(handler=cmd_probe)
@@ -324,6 +360,87 @@ def cmd_meta(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_note(args: argparse.Namespace) -> int:
+    """``ideate note``: file a correction into meta memory immediately, with no model call.
+
+    This is the cheapest write in the system and the most valuable: it is how a correction
+    survives the session that produced it. It never touches the network or an LLM, so an agent
+    can call it the moment it is corrected without asking anyone.
+    """
+    settings = settings_from(args)
+    text = args.text.strip()
+    if not text:
+        raise SettingsError("note text is empty")
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    store = IdeationSystem(settings).meta
+    pattern = store.add_meta_pattern(
+        MetaPattern(
+            kind=args.kind,
+            text=text,
+            tags=tags,
+            scope=args.scope,
+            provider=HUMAN_PROVIDER,
+            confidence=HUMAN_CONFIDENCE,
+        )
+    )
+    notice(f"noted {pattern.kind} in {settings.meta_path} (seen {pattern.observations}x, confidence {pattern.confidence:.2f})")
+    print(pattern.id)
+    return EXIT_OK
+
+
+def cmd_charter(args: argparse.Namespace) -> int:
+    """``ideate charter``: show the standing charter, or replace it."""
+    settings = settings_from(args)
+    if args.set_file:
+        text = Path(args.set_file).read_text(encoding="utf-8")
+        path = save_charter(settings.charter_path, text)
+        notice(f"charter replaced from {args.set_file}")
+        print(path)
+        return EXIT_OK
+    if args.init:
+        if Path(settings.charter_path).exists():
+            raise SettingsError(f"{settings.charter_path} already exists; edit it or use --set FILE")
+        path = save_charter(settings.charter_path, DEFAULT_CHARTER)
+        notice(f"default charter written to {path}; edit it to fit how you work")
+        print(path)
+        return EXIT_OK
+    text, from_file = load_charter(settings.charter_path)
+    notice(f"charter: {settings.charter_path}" if from_file else "charter: bundled default (run `ideate charter --init` to edit it)")
+    sys.stdout.write(text.rstrip() + "\n")
+    return EXIT_OK
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """``ideate fetch``: pull arXiv abstracts or a page into the corpus as cited evidence."""
+    settings = settings_from(args)
+    system = IdeationSystem(settings)
+    if bool(args.arxiv) == bool(args.url):
+        raise SettingsError("pass either a URL or --arxiv QUERY, not both and not neither")
+    if args.arxiv:
+        docs = fetch_arxiv(args.arxiv, args.max)
+        what = f"arXiv {args.arxiv!r}"
+    else:
+        docs = [fetch_url(args.url)]
+        what = args.url
+    paths = write_docs(docs, settings.fetched_dir, system.now())
+    notice(f"fetched {len(paths)} document(s) from {what} into {settings.fetched_dir}")
+    for path in paths:
+        print(path)
+    if args.reindex:
+        system.build_index(force=True)
+    else:
+        notice("run 'ideate index' (or pass --reindex) to make this retrievable")
+    return EXIT_OK
+
+
+def cmd_gaps(args: argparse.Namespace) -> int:
+    """``ideate gaps``: what runs could not answer, and the fetch command for each."""
+    settings = settings_from(args)
+    gaps = collect_gaps(settings.runs_dir, include_placeholder=args.include_placeholder)
+    sys.stdout.write(render_gaps(gaps, args.max) + "\n")
+    return EXIT_OK
+
+
 def load_ideas(path: str) -> list[Idea]:
     """Ideas from a JSON list (or a saved result's ``ideas``); items may be ``{title, description}`` only."""
     data = read_json(path)
@@ -440,6 +557,12 @@ def run_command(handler: Callable[[argparse.Namespace], int], args: argparse.Nam
         return EXIT_REFUSAL
     except LLMTransientError as e:
         print(f"transient: {e} (retry later)", file=sys.stderr)
+        return EXIT_TRANSIENT
+    except FetchError as e:
+        # Unreachable host, a rejected request or an unparseable body: worth another try, and
+        # never worth writing a half-fetched document into the corpus.
+        print(f"transient: {e}", file=sys.stderr)
+        print("  fix: check the URL or query and retry; nothing was written", file=sys.stderr)
         return EXIT_TRANSIENT
     except (LLMError, GraphError, OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)

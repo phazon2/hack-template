@@ -41,7 +41,11 @@ CHUNK_KINDS: tuple[str, ...] = (
     "rules",
 )
 PROBLEM_TYPES: tuple[str, ...] = ("greenfield", "constrained", "integration", "data", "social", "unclear")
-META_PATTERN_KINDS: tuple[str, ...] = ("strategy", "process", "pitfall")
+META_PATTERN_KINDS: tuple[str, ...] = ("strategy", "process", "pitfall", "correction")
+# A lesson the user stated directly. Never quarantined, and it outranks anything the system
+# inferred about itself: the point of `ideate note` is that a correction is remembered forever.
+HUMAN_PROVIDER = "human"
+HUMAN_CONFIDENCE = 0.9
 
 
 # --------------------------------------------------------------------------- helpers
@@ -343,6 +347,8 @@ class IdeationResult(Model):
     iterations: int = 0
     retrieval_rounds: int = 0
     coverage_gaps: list[str] = field(default_factory=list)
+    dropped_invalid: int = 0
+    dropped_duplicate: int = 0
     trace: list[TraceStep] = field(default_factory=list)
     is_placeholder: bool = False
     strategy: "Strategy | None" = None

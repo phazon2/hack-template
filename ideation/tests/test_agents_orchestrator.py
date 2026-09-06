@@ -219,7 +219,9 @@ def test_full_graph_under_default_mock(kb, tmp_path):
     settings = ctx.settings
     # The mock strategist plans the midpoint of int_(1, max_iterations), so loop rule B stops at 1.
     assert state.strategy is not None and state.iteration == state.strategy.rounds == 1
-    assert len(state.ideas) == settings.ideas_per_round * state.iteration
+    # Conservation law, not a raw count: the Jaccard diversity filter legitimately drops a
+    # near-duplicate, and how many it drops depends on the generated text.
+    assert len(state.ideas) == settings.ideas_per_round * state.iteration - state.dropped_duplicate
     assert 1 <= state.retrieval_rounds <= settings.max_retrieval_rounds
     ids = [i.id for i in state.ideas]
     assert len(set(ids)) == len(ids)
@@ -282,7 +284,7 @@ def test_accept_branch_stops_after_one_round(kb, tmp_path):
     mock = MockLLM(seed=0, scripted={"judge": [scripted_judge_entry(ids, 5.0)] * 3})
     state, ctx = run_default(kb, tmp_path, llm=mock)
     assert state.iteration == 1
-    assert len(state.ideas) == 8 and state.visited.count("creativity") == 1
+    assert len(state.ideas) == 8 - state.dropped_duplicate and state.visited.count("creativity") == 1
     assert all(v.consensus.weighted_score == 5.0 for v in state.verdicts)
     assert len(ctx.trace) == expected_trace_len(state, ctx.settings)
     assert state.proposal.idea_id == state.ranking[0]

@@ -9,6 +9,7 @@ from ideate.config import Settings
 from ideate.evaluation.rubric import Rubric
 from ideate.llm.schema import arr, enum, int_, num, obj, str_
 from ideate.meta.context import meta_context_for
+from ideate.meta.charter import load_charter
 from ideate.meta.ingest import TRUST_NOTE
 from ideate.models import PROBLEM_TYPES, TECHNIQUES, IdeationState, MetaPattern, Strategy
 
@@ -69,9 +70,17 @@ def strategist_prompt(
     rules_chunks: list,
     meta_block: str,
     max_rounds: int,
+    charter: str = "",
 ) -> str:
-    """User prompt: theme, constraints, process knowledge, ingested rules, meta memory and the ask."""
-    parts = [
+    """User prompt: charter, theme, constraints, process knowledge, rules, meta memory, the ask.
+
+    The charter comes first and verbatim — it is standing instruction about what this system is
+    for and how its owner works, not a retrieved snippet competing on relevance.
+    """
+    parts = []
+    if charter:
+        parts.append(f"Standing charter for this system (always applies):\n\n{charter}")
+    parts += [
         f"Theme: {state.theme}\n{constraints_block(state.constraints)}",
         f"Process knowledge ({len(meta_chunks)} snippets on how to generate, retrieve and judge):\n\n"
         f"{knowledge_block(meta_chunks) or '(none retrieved)'}",
@@ -153,7 +162,10 @@ class StrategistAgent(Agent):
         meta_chunks = ctx.retrieve(state.theme, k=settings.meta_k, kind=META_KIND)
         rules_chunks = ctx.retrieve(state.theme, k=RULES_K, kind=RULES_KIND)
         meta_block, shown = meta_material(state.theme, ctx)
-        prompt = strategist_prompt(state, meta_chunks, rules_chunks, meta_block, settings.max_iterations)
+        charter, _ = load_charter(settings.charter_path)
+        prompt = strategist_prompt(
+            state, meta_chunks, rules_chunks, meta_block, settings.max_iterations, charter
+        )
         request = ctx.request(
             STRATEGIST_TAG,
             STRATEGIST_SYSTEM,
