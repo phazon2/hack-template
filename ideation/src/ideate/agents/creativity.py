@@ -196,7 +196,13 @@ def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk],
             "'name — access: none|free key|account — what it provides'\n"
             "- every idea cites at least one shown snippet by chunk id in citations\n"
             f"- demo_moment describes what is on screen at ~90 seconds; build_hours_estimate is between 1 and {hours}\n"
-            "- ideas that use anything in Must avoid are invalid"
+            "- ideas that use anything in Must avoid are invalid\n"
+            # The shape observed in a real winners' gallery, not a style preference:
+            # corpus/winning-submission-language.md.
+            "- one_liner follows the shape that won in the observed gallery: put the reader in a "
+            "specific moment or name the assumption you are betting against, say what the system "
+            "does and where it stops, and name a mechanism a stranger could go and check. It must "
+            "be repeatable from memory by a judge who heard it once"
         ),
     ]
     if top3:
