@@ -3,7 +3,8 @@
 `ideate` turns a theme and an event's constraints into a ranked set of hackathon project
 ideas and one build-ready proposal. It grounds every step in a small, honest knowledge base
 (judging criteria, demo strategy, scoping, failure modes, free public APIs, project
-archetypes, antipatterns, plus whatever you drop into `corpus/event/` for a specific event),
+archetypes, antipatterns, how judging formats differ and how judges actually perceive a
+project, plus whatever you drop into `corpus/event/` for a specific event),
 retrieves from it with hybrid BM25 + vector search and a reranker, and runs a fixed graph of
 agents: an orchestrator expands the theme into queries, a research agent reads the retrieved
 snippets and names its coverage gaps (which trigger another retrieval round), a domain expert
@@ -290,6 +291,12 @@ ideate charter --set my-charter.md
 The bundled default states what the system is for, how its owner works (including that they
 will not log, and that any narrow detail must be tied back to the strategy), and the evidence
 and credential rules. Edit it — it is the highest-leverage text in the repo.
+
+It also carries a **precedence rule**: on strategy, framing, design and positioning, external
+evidence beats this system's own reasoning, and a run that departs from internal guidance to
+follow a sourced external claim should say so. The internal advice has never won a hackathon and
+the external sources have; the rule holds until there are recorded outcomes to weigh against
+them. It does not extend to technical execution, or to the evidence and credential rules.
 
 **`ideate gaps` — the system says what it is missing.** Runs already record `coverage_gaps`;
 this turns them into commands instead of questions:

@@ -15,6 +15,9 @@ DEFAULT_PERSONAS: list[str] = [
     "hackathon judge who has judged 50 events and rewards a demo that lands in 90 seconds",
     "senior engineer estimating what {team_size} people can ship in {hours} hours",
     "domain expert in {theme} who knows what already exists",
+    # The room, not the rubric: someone has to repeat this project from memory and win an
+    # argument for it (corpus/judge-perception.md).
+    "tired judge on submission 80 of {theme} who must argue for one project from memory later",
 ]
 
 _TRUE = {"1", "true", "yes", "on"}

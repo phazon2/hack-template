@@ -348,3 +348,11 @@ def test_fetched_material_is_part_of_the_corpus_without_being_wired_in(tmp_path,
     assert "fetched" in settings.all_corpus_dirs()
     # Ordering matters: bundled guidance first, fetched evidence next, explicit dirs last.
     assert settings.all_corpus_dirs()[-1] == "fetched"
+
+
+def test_charter_states_that_external_evidence_wins_on_strategy():
+    """The precedence rule is the point of the charter: internal reasoning has never won."""
+    text = DEFAULT_CHARTER.lower()
+    assert "external evidence beats" in text
+    assert "technical execution" in text  # and where the rule stops
+    assert "judge-perception.md" in DEFAULT_CHARTER
