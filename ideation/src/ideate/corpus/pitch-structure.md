@@ -19,6 +19,27 @@ makes it novel and how it works. Fifteen seconds on what you would do next. Stop
 time to spare. Judges reward brevity and penalise overruns, and a pitch that finishes
 early leaves room for the questions that let you show depth.
 
+## Two shapes, and how to tell which you need
+
+The shape above is tuned for a short science-fair-style demo where a judge walks up, watches,
+and moves on. A different shape circulates for longer staged pitches: spend roughly a fifth of
+the time on why the problem matters, a third on how the solution creates value, and half on
+what it concretely does. Dr. Anthony Giannoumis, who has judged at the UN World Summit on the
+Information Society, gives that split in *How to Pitch at Hackathons*
+(youtube.com/watch?v=k00WsEPDmrU), worked through for a ten-minute slot.
+
+These disagree about how much time the solution deserves, and the disagreement is about format
+rather than taste. The shorter the slot and the more the judge is comparing you against the
+project they just saw, the more of it belongs to the working thing on screen: a seven-time
+winner's advice for a five-minute demo is to give roughly four and a half minutes to the
+solution. The longer the slot and the more the judging resembles a presentation, the more room
+there is to establish why and how first. Two minutes on the problem is a fifth of a ten-minute
+pitch and most of a three-minute one.
+
+One point both agree on: do not simply restate the problem you were handed. The jury already
+knows it. What earns attention is your interpretation of it — which part you decided actually
+matters, and why that framing led to this solution.
+
 ## Open with the user, not the market
 
 The first sentence names a person in a situation: a role, a moment, a pain. "A

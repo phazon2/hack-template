@@ -46,14 +46,22 @@ always something to show, then replace the fake data with real data one source a
 time as they prove reliable. Keep the fake path available behind a flag as a fallback.
 Never present a fake-data demo as if it were live; say "this is seeded data" if it is.
 
-## Record a fallback
+## Record the demo video, and start it earlier than feels comfortable
 
 By the last ten percent of the clock, record a screen capture of the demo path working
-end to end. Networks fail, projectors fail, laptops sleep. A recorded fallback turns a
+end to end. Networks fail, projectors fail, laptops sleep. A recording turns a
 catastrophe into a minor stumble: "the wifi dropped, here is the same flow recorded
 an hour ago". Judges do not penalise a fallback that was clearly recorded during the
 event; they penalise a blank screen. Keep the recording on the presenting laptop, not
 in the cloud.
+
+Treating that recording as only a fallback undersells it badly. At many events the demo
+video is the artifact the decision is actually made from: organisers reviewing a pile of
+top submissions have well under an hour for all of them, they rely on the video for a
+holistic view, and most will not read the written description at all. So when the last
+two or three hours present the usual trade — one more feature, or the video — the video
+almost always wins, because a feature nobody watches scores nothing. See
+`judging-formats.md` for who is watching and when.
 
 ## No login on stage
 
