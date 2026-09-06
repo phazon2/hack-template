@@ -325,6 +325,31 @@ ends on-topic rather than empty. When arXiv genuinely has nothing, it says so ra
 returning noise. A query that already names fields (`cat:cs.HC AND ti:hackathon`) is passed
 through untouched.
 
+**`ideate watch` — a winning pitch is primary evidence.** Recorded demos say what a team led
+with, how fast the aha landed, and what they cut. Captions become a corpus document citing the
+video:
+
+```bash
+pip install -e "ideation[video]"          # adds yt-dlp
+ideate watch "https://www.youtube.com/watch?v=..." --reindex
+```
+
+Captions only — no ffmpeg, no transcription key, cheap enough to run across a playlist one URL
+at a time. Human-written tracks are preferred over auto-generated ones because ASR mangles the
+names and product terms worth quoting, and the transcript is stamped every ~15 seconds so you
+can cite a moment without paying for a timestamp on every cue.
+
+YouTube rate-limits datacenter IPs with a "confirm you're not a bot" check that usually clears
+on retry, so `watch` retries it four times with backoff while passing a genuine failure (private
+or deleted video) straight through. From a cloud container expect some URLs to need a second
+attempt; from your own machine it is far less common.
+
+For what a demo *looks* like, frames matter more than words, and this is the wrong tool. The
+[`/watch` plugin](https://github.com/bradautomates/claude-video) reads frames as images and is
+the better one — it needs `ffmpeg` and runs interactively. The two are complements: `ideate
+watch` feeds retrieval, `/watch` feeds judgement, and anything you learn from `/watch` belongs
+in `ideate note` so it outlives the session.
+
 ## Evidence discipline
 
 The repo's `CLAUDE.md` rules are enforced in code, not just documented:
@@ -353,13 +378,13 @@ environment variable.
 
 ```
 usage: ideate [-h] [--version]
-              {index,run,judge,learn,memory,ingest,note,charter,fetch,gaps,strategy,reflect,meta,probe}
+              {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,gaps,strategy,reflect,meta,probe}
               ...
 
 Hackathon ideation system.
 
 positional arguments:
-  {index,run,judge,learn,memory,ingest,note,charter,fetch,gaps,strategy,reflect,meta,probe}
+  {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,gaps,strategy,reflect,meta,probe}
     index               build or refresh the knowledge index
     run                 generate, judge and refine ideas for a theme
     judge               judge ideas from a JSON file
@@ -369,6 +394,7 @@ positional arguments:
     note                file a correction or lesson instantly (no LLM call)
     charter             show or replace the standing charter
     fetch               fetch papers or a page into the corpus as cited evidence
+    watch               pull a video's transcript into the corpus as cited evidence
     gaps                what the knowledge base is missing, and the command to fill it
     strategy            plan how to approach a theme (one call, no ideas)
     reflect             reflect on a saved run and record what the system
@@ -647,6 +673,19 @@ usage: ideate fetch [-h] [--arxiv QUERY] [--max N] [--reindex]
 Fetches arXiv abstracts (`--arxiv`) or one http(s) page (`URL`) into `IDEATE_FETCHED_DIR` as
 `kind: evidence` with full attribution, and prints the paths. This is the only command that
 reaches the network. A failure writes nothing and exits 3.
+
+### `ideate watch`
+
+```
+usage: ideate watch [-h] [--lang LANG] [--reindex]
+                    [--corpus DIR] [--no-bundled-corpus] [--index DIR]
+                    URL
+```
+
+Fetches a video's captions into `IDEATE_FETCHED_DIR` as `kind: evidence`, citing the video URL,
+with the channel as author and the upload date as `published`. Requires the `video` extra
+(`pip install -e "ideation[video]"`). Anything yt-dlp supports works, not only YouTube. A
+missing extra exits 2 (config-fixable); a rate limit or a video without captions exits 3.
 
 ### `ideate gaps`
 

@@ -190,3 +190,11 @@ is verified against the live API; everything else runs without a network.
   `content_sha256` is already in the front matter of every fetched document.
 - *Beyond abstracts.* arXiv full texts, PDFs and paywalled sources are out of scope; only
   abstracts are fetched. Seam: `meta/fetch.py` `parse_arxiv` and the `Opener` protocol.
+- *Video beyond captions.* `ideate watch` reads captions only, so a demo's visual craft — what
+  is on screen, how the first frames read, what the judges actually saw — is invisible to it.
+  Frames need `ffmpeg` and are better served interactively by the `/watch` plugin
+  (`github.com/bradautomates/claude-video`); the bridge today is `ideate note`. Seam:
+  `meta/video.py` `fetch_transcript` and the `Extractor` protocol.
+- *Playlists and channels.* One URL per invocation. Batch ingestion would make a channel of
+  winning pitches a single command, but YouTube rate-limits datacenter IPs hard enough that a
+  naive loop mostly fails. Seam: the retry ladder in `meta/video.py` `ytdlp_extractor`.

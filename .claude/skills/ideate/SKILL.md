@@ -86,6 +86,13 @@ When you are missing knowledge, do not ask the user whether a source would help 
 `ideate gaps` to see what past runs could not answer, and `ideate fetch --arxiv "<query>"` to
 pull it in. Deciding that is your job, not theirs.
 
+When the user links a video of a winning project or a talk about hackathons, run
+`ideate watch "<url>" --reindex` (needs the `video` extra). That files the transcript as cited
+evidence the next run can retrieve. If they want the *visual* quality of a demo analysed — what
+was on screen, how the first frames read — that needs the separate `/watch` plugin
+(`github.com/bradautomates/claude-video`), which reads frames as images; file what you learn
+from it with `ideate note`.
+
 ## 7. Never handle credentials
 
 If the run needs a real provider and there is no key, stop and tell the user exactly this
