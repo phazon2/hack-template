@@ -344,11 +344,30 @@ on retry, so `watch` retries it four times with backoff while passing a genuine 
 or deleted video) straight through. From a cloud container expect some URLs to need a second
 attempt; from your own machine it is far less common.
 
-For what a demo *looks* like, frames matter more than words, and this is the wrong tool. The
-[`/watch` plugin](https://github.com/bradautomates/claude-video) reads frames as images and is
-the better one — it needs `ffmpeg` and runs interactively. The two are complements: `ideate
-watch` feeds retrieval, `/watch` feeds judgement, and anything you learn from `/watch` belongs
-in `ideate note` so it outlives the session.
+**`ideate frames` — what the judges actually saw.** Captions say what a presenter *said*;
+frames show the opening shot, how fast the aha lands, whether the UI reads at a glance. That is
+most of what makes a demo win and none of it is in the transcript.
+
+```bash
+pip install -e "ideation[frames]"     # adds a bundled ffmpeg, no system package, no root
+ideate frames demo.mp4 --max-frames 24
+ideate frames demo.mp4 --start 0 --end 30 --max-frames 20   # dense pass over the opening
+```
+
+It writes JPEGs and prints a timestamped index; an agent then reads them as images. The frame
+budget, not a fixed rate, is the constraint — every frame is an image and images dominate token
+cost — so a 20-second clip and a 20-minute talk both come back within budget. It stops at
+producing frames on purpose: judging what the first five seconds communicate is the interesting
+part and does not belong buried in a helper.
+
+**The catch: this container cannot download YouTube video.** Captions come through, the video
+stream does not — every yt-dlp player client gets "Sign in to confirm you're not a bot" from a
+datacenter IP. The fix YouTube names is browser cookies, which are session credentials, so this
+tool will not touch them. What works instead: download the video yourself and point `ideate
+frames` at the file, use a non-gated source (a direct MP4, Vimeo, a conference host), or run
+[`/watch`](https://github.com/bradautomates/claude-video) on your own machine, where the
+residential IP is not challenged and the plugin handles fetch, frames and transcript in one
+step. Whatever you learn that way belongs in `ideate note` so it outlives the session.
 
 ## Evidence discipline
 
@@ -378,13 +397,13 @@ environment variable.
 
 ```
 usage: ideate [-h] [--version]
-              {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,gaps,strategy,reflect,meta,probe}
+              {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,frames,gaps,strategy,reflect,meta,probe}
               ...
 
 Hackathon ideation system.
 
 positional arguments:
-  {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,gaps,strategy,reflect,meta,probe}
+  {index,run,judge,learn,memory,ingest,note,charter,fetch,watch,frames,gaps,strategy,reflect,meta,probe}
     index               build or refresh the knowledge index
     run                 generate, judge and refine ideas for a theme
     judge               judge ideas from a JSON file
@@ -395,6 +414,7 @@ positional arguments:
     charter             show or replace the standing charter
     fetch               fetch papers or a page into the corpus as cited evidence
     watch               pull a video's transcript into the corpus as cited evidence
+    frames              extract frames from a local video so an agent can see it
     gaps                what the knowledge base is missing, and the command to fill it
     strategy            plan how to approach a theme (one call, no ideas)
     reflect             reflect on a saved run and record what the system
@@ -686,6 +706,19 @@ Fetches a video's captions into `IDEATE_FETCHED_DIR` as `kind: evidence`, citing
 with the channel as author and the upload date as `published`. Requires the `video` extra
 (`pip install -e "ideation[video]"`). Anything yt-dlp supports works, not only YouTube. A
 missing extra exits 2 (config-fixable); a rate limit or a video without captions exits 3.
+
+### `ideate frames`
+
+```
+usage: ideate frames [-h] [--out DIR] [--max-frames N] [--start SEC] [--end SEC]
+                     [--width PX]
+                     VIDEO
+```
+
+Samples evenly spaced stills from a local video into `--out` (default `.ideate/frames`) and
+prints one line per frame with its timestamp. Requires the `frames` extra
+(`pip install -e "ideation[frames]"`), which brings its own ffmpeg. Takes a file, not a URL —
+fetch the video first. A missing extra exits 2; an unreadable or non-video file exits 1.
 
 ### `ideate gaps`
 

@@ -21,6 +21,7 @@ from ideate.meta.charter import DEFAULT_CHARTER, load_charter, save_charter
 from ideate.meta.fetch import FetchError, fetch_arxiv, fetch_url, write_docs
 from ideate.meta.gaps import collect_gaps, render_gaps
 from ideate.meta.ingest import ingest_into
+from ideate.meta.frames import FrameError, FramesToolMissing, extract_frames, render_index
 from ideate.meta.video import VideoToolMissing, fetch_transcript
 from ideate.models import (
     HUMAN_CONFIDENCE,
@@ -205,6 +206,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--reindex", action="store_true", help="rebuild the index so it is retrievable now")
     _add_corpus_options(p_fetch)
     p_fetch.set_defaults(handler=cmd_fetch)
+
+    p_frames = sub.add_parser("frames", help="extract frames from a local video so an agent can see it")
+    p_frames.add_argument("path", metavar="VIDEO")
+    p_frames.add_argument("--out", metavar="DIR", default=".ideate/frames", help="where to write frames")
+    p_frames.add_argument("--max-frames", type=int, default=24, metavar="N")
+    p_frames.add_argument("--start", type=float, metavar="SEC", help="only from this second")
+    p_frames.add_argument("--end", type=float, metavar="SEC", help="only up to this second")
+    p_frames.add_argument("--width", type=int, default=512, metavar="PX")
+    p_frames.set_defaults(handler=cmd_frames)
 
     p_gaps = sub.add_parser("gaps", help="what the knowledge base is missing, and the command to fill it")
     p_gaps.add_argument("--max", type=int, default=5, metavar="N", help="results per suggested fetch")
@@ -457,6 +467,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_frames(args: argparse.Namespace) -> int:
+    """``ideate frames``: stills from a video, listed with timestamps for an agent to read."""
+    frames = extract_frames(
+        args.path,
+        args.out,
+        max_frames=args.max_frames,
+        start=args.start,
+        end=args.end,
+        width=args.width,
+    )
+    notice(f"extracted {len(frames)} frame(s) from {args.path} into {args.out}")
+    sys.stdout.write(render_index(frames, Path(args.path).name) + "\n")
+    return EXIT_OK
+
+
 def cmd_gaps(args: argparse.Namespace) -> int:
     """``ideate gaps``: what runs could not answer, and the fetch command for each."""
     settings = settings_from(args)
@@ -582,10 +607,13 @@ def run_command(handler: Callable[[argparse.Namespace], int], args: argparse.Nam
     except LLMTransientError as e:
         print(f"transient: {e} (retry later)", file=sys.stderr)
         return EXIT_TRANSIENT
-    except VideoToolMissing as e:
+    except (VideoToolMissing, FramesToolMissing) as e:
         print(f"blocker (config-fixable): {e}", file=sys.stderr)
         print(f"  fix: {e.hint}", file=sys.stderr)
         return EXIT_CONFIG
+    except FrameError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_ERROR
     except FetchError as e:
         # Unreachable host, a rejected request or an unparseable body: worth another try, and
         # never worth writing a half-fetched document into the corpus.

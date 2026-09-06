@@ -88,10 +88,16 @@ pull it in. Deciding that is your job, not theirs.
 
 When the user links a video of a winning project or a talk about hackathons, run
 `ideate watch "<url>" --reindex` (needs the `video` extra). That files the transcript as cited
-evidence the next run can retrieve. If they want the *visual* quality of a demo analysed — what
-was on screen, how the first frames read — that needs the separate `/watch` plugin
-(`github.com/bradautomates/claude-video`), which reads frames as images; file what you learn
-from it with `ideate note`.
+evidence the next run can retrieve.
+
+To judge a demo's *visual* craft — the opening shot, how fast the aha lands, whether the UI
+reads — you need frames, not captions. If you have the video as a file, run
+`ideate frames <path> --max-frames 24` (needs the `frames` extra) and read the JPEGs it lists;
+they render as images. YouTube URLs will not download from a cloud container (the video stream
+is bot-blocked even though captions are not), so ask the user for the file, or use a non-gated
+source, or point them at the `/watch` plugin (`github.com/bradautomates/claude-video`) on their
+own machine. Never ask for browser cookies to get around it — those are credentials. File what
+you learn with `ideate note`.
 
 ## 7. Never handle credentials
 
