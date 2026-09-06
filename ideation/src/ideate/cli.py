@@ -21,6 +21,7 @@ from ideate.meta.charter import DEFAULT_CHARTER, load_charter, save_charter
 from ideate.meta.fetch import FetchError, fetch_arxiv, fetch_url, write_docs
 from ideate.meta.gaps import collect_gaps, render_gaps
 from ideate.meta.ingest import ingest_into
+from ideate.meta.video import VideoToolMissing, fetch_transcript
 from ideate.models import (
     HUMAN_CONFIDENCE,
     HUMAN_PROVIDER,
@@ -209,6 +210,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_gaps.add_argument("--max", type=int, default=5, metavar="N", help="results per suggested fetch")
     p_gaps.add_argument("--include-placeholder", action="store_true", help="also use mock runs' gaps")
     p_gaps.set_defaults(handler=cmd_gaps)
+
+    p_watch = sub.add_parser("watch", help="pull a video's transcript into the corpus as cited evidence")
+    p_watch.add_argument("url", metavar="URL")
+    p_watch.add_argument("--lang", default="en", help="caption language (default en)")
+    p_watch.add_argument("--reindex", action="store_true", help="rebuild the index so it is retrievable now")
+    _add_corpus_options(p_watch)
+    p_watch.set_defaults(handler=cmd_watch)
 
     p_probe = sub.add_parser("probe", help="make one real call and write a receipt")
     _add_provider_options(p_probe)
@@ -433,6 +441,22 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """``ideate watch``: a video's captions become a corpus document citing the video."""
+    settings = settings_from(args)
+    system = IdeationSystem(settings)
+    doc = fetch_transcript(args.url, lang=args.lang)
+    paths = write_docs([doc], settings.fetched_dir, system.now())
+    notice(f"transcribed {doc.title!r} ({len(doc.text)} chars) into {settings.fetched_dir}")
+    for path in paths:
+        print(path)
+    if args.reindex:
+        system.build_index(force=True)
+    else:
+        notice("run 'ideate index' (or pass --reindex) to make this retrievable")
+    return EXIT_OK
+
+
 def cmd_gaps(args: argparse.Namespace) -> int:
     """``ideate gaps``: what runs could not answer, and the fetch command for each."""
     settings = settings_from(args)
@@ -558,6 +582,10 @@ def run_command(handler: Callable[[argparse.Namespace], int], args: argparse.Nam
     except LLMTransientError as e:
         print(f"transient: {e} (retry later)", file=sys.stderr)
         return EXIT_TRANSIENT
+    except VideoToolMissing as e:
+        print(f"blocker (config-fixable): {e}", file=sys.stderr)
+        print(f"  fix: {e.hint}", file=sys.stderr)
+        return EXIT_CONFIG
     except FetchError as e:
         # Unreachable host, a rejected request or an unparseable body: worth another try, and
         # never worth writing a half-fetched document into the corpus.
