@@ -125,8 +125,8 @@ def test_discover_rejects_a_non_json_index():
 
 
 # --------------------------------------------------------------------------- sweeping
-def test_sweep_reports_what_it_skipped_so_a_low_hit_rate_is_visible():
-    """Most ended events have not announced; silence would read as 'nothing found'."""
+def test_sweep_reports_what_it_skipped_without_overclaiming():
+    """Silence would read as 'nothing found', and 'no winners' would assert more than was seen."""
     index = json.dumps({"hackathons": [
         {"title": "Announced", "url": "https://win.devpost.com"},
         {"title": "Pending", "url": "https://pending.devpost.com"},
@@ -146,7 +146,9 @@ def test_sweep_reports_what_it_skipped_so_a_low_hit_rate_is_visible():
     found, skipped = sweep("agents", opener=opener)
     assert [g.title for g in found] == ["Announced"]
     reasons = dict(skipped)
-    assert reasons["Pending"] == "no winners announced"
+    # Never "no winners announced": organisers often announce in Discord or by email and
+    # leave the gallery untouched, so the page is all that was actually observed.
+    assert reasons["Pending"] == "no winner labels on the gallery page"
     assert "rendered no listing" in reasons["Shell"]
 
 

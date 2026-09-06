@@ -6,9 +6,11 @@ videos, papers, our own reasoning — is a claim about what wins. A gallery is a
 did.
 
 Devpost exposes a public JSON index of events, so galleries can be found rather than supplied.
-The catch is yield: most events that have *ended* have not yet *announced*, and an unannounced
-gallery carries no labels. Sweeping is therefore cheap per event and low-hit; a link to a known
-announced event is worth many sweeps.
+The catch is yield, and it is worse than it looks. A gallery with no labels means only that *this
+page* carries none — organisers frequently announce winners in Discord or by email and never
+update the gallery, so an unlabelled page is not evidence that nothing was decided. Sweeping is
+therefore cheap per event, low-hit, and blind to an unknown share of real outcomes; a link to an
+event someone knows announced is worth many sweeps.
 
 Only public listing pages are read, one request per event, with the shared opener. Nothing here
 logs in, and no page behind an account is touched.
@@ -135,7 +137,8 @@ def sweep(
     """Discover events and return the galleries that actually carry outcomes.
 
     Returns the galleries with winners and a list of (title, reason) for the ones skipped, so a
-    low hit rate is visible rather than looking like an empty result.
+    low hit rate is visible rather than looking like an empty result. A skip reason never claims
+    an event had no winners — only that this page showed none, which is all that was observed.
     """
     events: list[dict] = []
     for page in range(1, max(1, pages) + 1):
@@ -155,7 +158,7 @@ def sweep(
         if gallery.has_outcomes:
             found.append(gallery)
         else:
-            skipped.append((title, "no winners announced"))
+            skipped.append((title, "no winner labels on the gallery page"))
     return found, skipped
 
 
