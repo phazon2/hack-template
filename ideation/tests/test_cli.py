@@ -177,14 +177,27 @@ def test_probe_under_mock_exits_2_and_writes_nothing(cli_env, tmp_path):
 
 
 # --------------------------------------------------------------------------- index
+def bundled_doc_count() -> int:
+    """How many documents the bundled corpus holds right now.
+
+    Asserting a literal would break every time a corpus file is added, which is a routine and
+    encouraged act — so the tests assert the relationship instead.
+    """
+    from ideate.config import bundled_corpus_dir
+    from ideate.knowledge.loaders import load_corpus
+
+    return len(load_corpus([bundled_corpus_dir()]))
+
+
 def test_index_prints_stats_to_stderr_only(cli_env, tmp_path):
+    expected = f"{bundled_doc_count()} docs"
     proc = run_cli(["index"], cli_env, tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
-    assert "index rebuilt" in proc.stderr and "20 docs" in proc.stderr
+    assert "index rebuilt" in proc.stderr and expected in proc.stderr
     assert (Path(cli_env["IDEATE_INDEX_DIR"]) / "vectors.json").exists()
     proc = run_cli(["index"], cli_env, tmp_path)
-    assert proc.returncode == 0 and "index rebuilt" not in proc.stderr and "20 docs" in proc.stderr
+    assert proc.returncode == 0 and "index rebuilt" not in proc.stderr and expected in proc.stderr
     proc = run_cli(["index", "--force"], cli_env, tmp_path)
     assert proc.returncode == 0 and "index rebuilt" in proc.stderr
 
@@ -334,7 +347,9 @@ def test_ingesting_new_material_invalidates_the_index(cli_env, tmp_path):
     assert "index rebuilt" not in run_cli(["index"], cli_env, tmp_path).stderr
     assert run_cli(["ingest", str(write_rules(tmp_path))], cli_env, tmp_path).returncode == 0
     proc = run_cli(["index"], cli_env, tmp_path)
-    assert proc.returncode == 0 and "index rebuilt" in proc.stderr and "21 docs" in proc.stderr
+    # Exactly one more document than the bundled corpus: the ingested file, nothing else.
+    assert proc.returncode == 0 and "index rebuilt" in proc.stderr
+    assert f"{bundled_doc_count() + 1} docs" in proc.stderr
 
 
 def test_strategy_prints_a_watermarked_plan(cli_env, tmp_path):
