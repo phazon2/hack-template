@@ -258,6 +258,73 @@ One `ideate run` makes `strategist + 1 + retrieval_rounds + 1 + iterations × (1
 reflector` calls, where `strategist` and `reflector` are 1 when enabled. With defaults (2
 retrieval rounds, 1–2 idea rounds, 3 judges) that is roughly 11–15 calls.
 
+### Capture: the part that does not depend on remembering
+
+Every loop above has a flaw: it only runs if someone runs it. If you will not reliably record
+an outcome, reflect on a run, or judge where an external source belongs, then those loops never
+execute and the system never actually learns. These four commands move that work off you.
+
+**`ideate note` — the agent logs, you don't.** One instant write, no model call, no network:
+
+```bash
+ideate note "front-end demos should show the aha before any auth screen" --tags design,demo
+ideate note "always name the data source in the pitch" --kind correction --scope constrained
+```
+
+Notes are stored as `correction` meta-patterns with `provider: human` and confidence 0.9. They
+are never quarantined (unlike mock-authored patterns) and they outrank anything the system
+inferred about itself. Repeating a note strengthens it rather than duplicating it. Because it
+is cheap and needs no judgement, an agent can call it the moment it is corrected — which is the
+only way a correction survives the session that produced it.
+
+**`ideate charter` — the meta goal, stated once.** The charter is *pinned*, not retrieved: the
+strategist loads it verbatim and first on every run, so it never competes with snippets on
+relevance and never has to be re-explained.
+
+```bash
+ideate charter            # show the current one (bundled default until you replace it)
+ideate charter --init     # write the default to .ideate/charter.md so you can edit it
+ideate charter --set my-charter.md
+```
+
+The bundled default states what the system is for, how its owner works (including that they
+will not log, and that any narrow detail must be tied back to the strategy), and the evidence
+and credential rules. Edit it — it is the highest-leverage text in the repo.
+
+**`ideate gaps` — the system says what it is missing.** Runs already record `coverage_gaps`;
+this turns them into commands instead of questions:
+
+```
+$ ideate gaps
+2 coverage gap(s) the knowledge base could not answer:
+
+- no data on cold chain logistics for food banks
+    seen in 2 run(s), e.g. 'AI for community food banks'
+    ideate fetch --arxiv "cold chain logistics food banks" --max 5
+```
+
+Placeholder (mock) runs are excluded by default — their gaps are generated text, and fetching
+real papers to answer an invented question would be nonsense.
+
+**`ideate fetch` — pull the source in, attributed.**
+
+```bash
+ideate fetch --arxiv "hackathon team formation" --max 5 --reindex
+ideate fetch https://example.com/rules --reindex
+```
+
+Everything lands in `.ideate/fetched/` as `kind: evidence` with `source`, `retrieved` and
+`content_sha256` front matter, which is the one corpus kind whose front matter *requires* a
+source. Fetched material joins the corpus automatically — no `--corpus` flag needed, because
+having to wire it in by hand would put the decision straight back on you.
+
+A note on arXiv queries: a bare phrase is scoped to abstracts and ANDed, because arXiv's
+default is a loose OR across every field that returns papers sharing one common word. If
+nothing matches, the query is relaxed one term at a time down to the leading term, so a search
+ends on-topic rather than empty. When arXiv genuinely has nothing, it says so rather than
+returning noise. A query that already names fields (`cat:cs.HC AND ti:hackathon`) is passed
+through untouched.
+
 ## Evidence discipline
 
 The repo's `CLAUDE.md` rules are enforced in code, not just documented:
@@ -286,19 +353,23 @@ environment variable.
 
 ```
 usage: ideate [-h] [--version]
-              {index,run,judge,learn,memory,ingest,strategy,reflect,meta,probe}
+              {index,run,judge,learn,memory,ingest,note,charter,fetch,gaps,strategy,reflect,meta,probe}
               ...
 
 Hackathon ideation system.
 
 positional arguments:
-  {index,run,judge,learn,memory,ingest,strategy,reflect,meta,probe}
+  {index,run,judge,learn,memory,ingest,note,charter,fetch,gaps,strategy,reflect,meta,probe}
     index               build or refresh the knowledge index
     run                 generate, judge and refine ideas for a theme
     judge               judge ideas from a JSON file
     learn               record a hackathon outcome and learn patterns from it
     memory              list learned patterns
     ingest              normalise and register an external memory source
+    note                file a correction or lesson instantly (no LLM call)
+    charter             show or replace the standing charter
+    fetch               fetch papers or a page into the corpus as cited evidence
+    gaps                what the knowledge base is missing, and the command to fill it
     strategy            plan how to approach a theme (one call, no ideas)
     reflect             reflect on a saved run and record what the system
                         learned
@@ -544,6 +615,48 @@ Lists what the system has learned about its own process, with each pattern's con
 observation count, or — with `--sources` — the ingested memory sources and their provenance.
 Mock-produced rows are hidden unless `--include-mock`, and marked `[mock]` when shown.
 
+### `ideate note`
+
+```
+usage: ideate note [-h] [--kind {strategy,process,pitfall,correction}]
+                   [--tags TAGS] [--scope SCOPE]
+                   TEXT
+```
+
+Files a lesson into meta memory immediately: no model call, no network, no index rebuild.
+Stored with `provider: human` and confidence 0.9, visible without `--include-mock`, and
+strengthened rather than duplicated when repeated. Prints the pattern id.
+
+### `ideate charter`
+
+```
+usage: ideate charter [-h] [--set FILE] [--init]
+```
+
+With no flags, prints the charter in force (the bundled default until you replace it). `--init`
+writes that default to `IDEATE_CHARTER_PATH` so you can edit it; `--set FILE` replaces it.
+
+### `ideate fetch`
+
+```
+usage: ideate fetch [-h] [--arxiv QUERY] [--max N] [--reindex]
+                    [--corpus DIR] [--no-bundled-corpus] [--index DIR]
+                    [URL]
+```
+
+Fetches arXiv abstracts (`--arxiv`) or one http(s) page (`URL`) into `IDEATE_FETCHED_DIR` as
+`kind: evidence` with full attribution, and prints the paths. This is the only command that
+reaches the network. A failure writes nothing and exits 3.
+
+### `ideate gaps`
+
+```
+usage: ideate gaps [-h] [--max N] [--include-placeholder]
+```
+
+Reads `coverage_gaps` across saved runs, merges them, ranks by how often each came up, and
+prints the `ideate fetch` command that would fill each one. Needs no model and no network.
+
 ### `ideate probe`
 
 ```
@@ -579,6 +692,8 @@ blocker (exit 2).
 | `IDEATE_REFLECTOR` | `1` | run the reflector after the pipeline | `--no-reflector` |
 | `IDEATE_META_PATH` | `.ideate/meta.jsonl` | meta memory: reflections, meta-patterns, ingested sources | |
 | `IDEATE_META_K` | `6` | meta chunks and meta-patterns shown to the strategist | |
+| `IDEATE_CHARTER_PATH` | `.ideate/charter.md` | the pinned charter; absent means the bundled default | |
+| `IDEATE_FETCHED_DIR` | `.ideate/fetched` | where `ideate fetch` writes; joins the corpus automatically | |
 | `IDEATE_FALLBACKS` | `true` | send the server-side fallback beta + `fallbacks="default"` | |
 | `IDEATE_TIMEOUT` | `600.0` | SDK client timeout in seconds | |
 | `IDEATE_CORPUS_DIRS` | empty | extra corpus directories on top of the bundled one | `--corpus DIR` (repeatable) |

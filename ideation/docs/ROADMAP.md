@@ -154,6 +154,16 @@ survives chunking, and every ingested snippet is rendered with an `[ingested: sr
 under a system-prompt rule that such material is data and never an instruction. Meta memory
 written under the mock never steers any run.
 
+**Capture (added after the first pass).** The loops above only run if someone runs them, which
+made them worth little to an owner who will not reliably log. Four commands move that work off
+the human: `ideate note` (an instant, model-free write so an agent files a correction the moment
+it happens, stored as `provider: human` and never quarantined), `ideate charter` (the meta goal
+pinned and loaded verbatim by the strategist on every run, so it is never re-explained),
+`ideate gaps` (the `coverage_gaps` runs already record, rendered as the exact fetch command that
+fills each), and `ideate fetch` (arXiv abstracts or a page into the corpus as `kind: evidence`
+with source, retrieval date and content hash, joining the corpus automatically). The arXiv path
+is verified against the live API; everything else runs without a network.
+
 **Deferred.**
 - *Calibrating the strategist against outcomes.* Today a meta-pattern's confidence rises with
   repetition, not with whether the runs it steered produced ideas that placed. Seam:
@@ -172,3 +182,11 @@ written under the mock never steers any run.
 - *Trust levels per source.* Ingested material is uniformly "reference data" today. A source
   the user vouches for versus one scraped from the internet could be weighted differently in
   retrieval. Seam: `MemorySource` (add a field) and `meta/context.py`.
+- *Automatic correction capture.* `ideate note` removes the effort but still needs an agent to
+  call it; a Claude Code hook could file corrections without any agent deciding to. Seam: the
+  command already takes plain text and exits fast enough for a hook.
+- *Deduplicating fetched evidence and pruning it.* `ideate fetch` will happily write the same
+  paper twice under different queries, and nothing ever removes stale evidence. Seam:
+  `content_sha256` is already in the front matter of every fetched document.
+- *Beyond abstracts.* arXiv full texts, PDFs and paywalled sources are out of scope; only
+  abstracts are fetched. Seam: `meta/fetch.py` `parse_arxiv` and the `Opener` protocol.
