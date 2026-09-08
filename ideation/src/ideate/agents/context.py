@@ -24,6 +24,7 @@ CANONICAL_TAGS: tuple[str, ...] = (
     "research",
     "domain_expert",
     "creativity",
+    "dedupe",
     "rerank",
     "synthesizer",
     "reflector",

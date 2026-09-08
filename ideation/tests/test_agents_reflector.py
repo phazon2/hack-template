@@ -376,7 +376,7 @@ def test_full_graph_with_the_meta_layer_writes_to_the_meta_store(tmp_path):
     state = IdeationState(THEME, HackathonConstraints())
     build_default_graph(settings, run_id="run-e2e").run(state, ctx)
     assert state.visited[0] == "strategist" and state.visited[-1] == "reflector"
-    assert len(trace) == 1 + 1 + state.retrieval_rounds + 1 + state.iteration * (1 + len(settings.judge_personas)) + 1 + 1
+    assert len(trace) == 1 + 1 + state.retrieval_rounds + 1 + state.iteration * (2 + len(settings.judge_personas)) + 1 + 1
     assert state.reflection is not None and state.reflection.run_id == "run-e2e"
     assert store.reflections(include_mock=True)[0].run_id == "run-e2e"
     assert store.meta_patterns(include_mock=True)

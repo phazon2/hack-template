@@ -82,7 +82,10 @@ def test_string_format_leaf_idx_words(mock_llm):
     for i, idea in enumerate(d["ideas"]):
         head, words = idea["title"].split(": ", 1)
         assert head == f"[mock] title#{i}"
-        assert set(words.split()) <= salient and len(words.split()) == 4
+        # The trailing token is a per-path marker that keeps array siblings distinguishable.
+        parts = words.split()
+        assert {w for w in parts if not w.startswith("mk")} <= salient
+        assert len(parts) == 5 and parts[-1].startswith("mk")
         assert [r.split(":")[0] for r in idea["risks"]] == [f"[mock] risks#{j}" for j in range(3)]
     assert d["summary"].startswith("[mock] summary: ")
 

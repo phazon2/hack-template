@@ -200,7 +200,7 @@ def expected_trace_len(state, settings) -> int:
         + 1
         + state.retrieval_rounds
         + 1
-        + state.iteration * (1 + len(settings.judge_personas))
+        + state.iteration * (2 + len(settings.judge_personas))  # creativity + dedupe + judges
         + 1
         + int(settings.reflector)
     )

@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 
 from ideate.agents.base import Agent
+from ideate.agents.dedupe import drop_semantic_duplicates
 from ideate.agents.context import RunContext, constraints_block, knowledge_block
 from ideate.agents.research import citations_schema, known_ids
+from ideate.knowledge.embeddings import HashingEmbedder
 from ideate.knowledge.tokenize import tokenize
 from ideate.meta.ingest import TRUST_NOTE
 from ideate.llm.base import LLMBadOutput
@@ -18,7 +20,13 @@ ANTIPATTERN_KIND = "antipattern"
 ANTIPATTERN_K = 4
 NEW_PARENT = "new"
 MIN_DEMO_MOMENT_WORDS = 4
-DIVERSITY_THRESHOLD = 0.6
+# Lexical stage only, calibrated on real idea pairs with this embedder fitted on the batch: a
+# near-copy scores ~0.80, a reworded duplicate ~0.20, two unrelated ideas ~0.00. The threshold sits in the gap, so near-copies go and everything
+# else survives. It is blind to rewording by construction — the published 0.8 belongs to sentence
+# embeddings, and reusing that number here would silently disable the filter. Rewording is caught
+# by the model in agents/dedupe.py.
+DIVERSITY_THRESHOLD = 0.65
+DIVERSITY_DIM = 512
 MIN_DISTINCT_USERS = 4
 MIN_DISTINCT_SOURCES = 3
 
@@ -92,8 +100,22 @@ def jaccard(a: set[str], b: set[str]) -> float:
 
 
 def idea_signature(idea: Idea) -> set[str]:
-    """The token set the diversity filter compares: ``title + " " + one_liner``."""
+    """The token set kept for cheap comparisons and tests: ``title + " " + one_liner``."""
     return simple_tokens(idea.title + " " + idea.one_liner)
+
+
+def idea_text(idea: Idea) -> str:
+    """What the diversity filter actually compares.
+
+    The whole idea, not its title: two ideas that differ only in wording are the same idea, and
+    the title is the part a generator varies most freely while repeating itself underneath.
+    """
+    return " ".join((idea.title, idea.one_liner, idea.description, idea.key_innovation, idea.target_user))
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two vectors that the embedder already normalised."""
+    return sum(x * y for x, y in zip(a, b))
 
 
 def validate_idea(idea: Idea, constraints: HackathonConstraints) -> list[str]:
@@ -117,14 +139,29 @@ def validate_idea(idea: Idea, constraints: HackathonConstraints) -> list[str]:
 
 
 def diverse(candidates: list[Idea], earlier: list[Idea], threshold: float = DIVERSITY_THRESHOLD) -> list[Idea]:
-    """Drop each candidate whose signature Jaccard with ANY earlier or previously kept idea exceeds ``threshold``."""
-    seen = [idea_signature(i) for i in earlier]
+    """Drop each candidate too close to any earlier or already-kept idea.
+
+    Similarity is cosine over embeddings of the whole idea, fitted on the batch so the comparison
+    reflects what varies within it. Duplication is the measured bottleneck in LLM ideation, so
+    this filter is the highest-value control in the pipeline rather than a tidy-up.
+    """
+    texts = [idea_text(i) for i in earlier + candidates]
+    if not texts:
+        return []
+    # Fitted on the batch on purpose. Generated ideas share a lot of vocabulary — the framing
+    # words, the domain, the model's own tics — and unfitted, that shared boilerplate alone pushes
+    # unrelated ideas past the threshold. IDF is what discounts it, so similarity reflects what
+    # actually distinguishes these ideas from each other. The cost is that similarity is defined
+    # relative to the batch rather than absolutely, which is the right trade for a dedup filter.
+    embedder = HashingEmbedder(dim=DIVERSITY_DIM)
+    embedder.fit(texts)
+    vectors = embedder.embed(texts)
+    seen = vectors[: len(earlier)]
     kept: list[Idea] = []
-    for idea in candidates:
-        sig = idea_signature(idea)
-        if any(jaccard(sig, s) > threshold for s in seen):
+    for idea, vector in zip(candidates, vectors[len(earlier) :]):
+        if any(cosine(vector, other) > threshold for other in seen):
             continue
-        seen.append(sig)
+        seen.append(vector)
         kept.append(idea)
     return kept
 
@@ -276,9 +313,15 @@ class CreativityAgent(Agent):
             survivors.extend(more)
         if not survivors:
             raise LLMBadOutput(f"creativity round {state.iteration}: no idea passed validation after one retry")
+        # Provisional ids so the semantic pass can refer to candidates; final ids are assigned
+        # below, once both filters have run and the batch is truncated.
+        for k, idea in enumerate(survivors, 1):
+            idea.id = f"cand-{state.iteration}-{k}"
         unique = diverse(survivors, state.ideas)
         state.dropped_duplicate += len(survivors) - len(unique)
-        kept = unique[:n]
+        deduped, semantic_dropped = drop_semantic_duplicates(unique, ctx)
+        state.dropped_duplicate += semantic_dropped
+        kept = deduped[:n]
         for k, idea in enumerate(kept, 1):
             idea.id = f"idea-{state.iteration}-{k}"
         state.ideas.extend(kept)

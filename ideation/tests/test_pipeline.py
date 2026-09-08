@@ -95,7 +95,7 @@ def test_e2e_default_mock(e2e):
     assert result.is_placeholder is True and result.provider == "mock" and result.model == "mock-1"
     assert len(result.trace) == (
         int(settings.strategist) + 1 + result.retrieval_rounds + 1
-        + result.iterations * (1 + len(settings.judge_personas)) + 1 + int(settings.reflector)
+        + result.iterations * (2 + len(settings.judge_personas)) + 1 + int(settings.reflector)
     )
     assert all(is_canonical_tag(t.agent) for t in result.trace)
     assert all(t.error is None for t in result.trace)
@@ -138,7 +138,10 @@ def test_ideate_with_reranker_none_still_completes(settings):
     result = IdeationSystem(settings, llm=MockLLM(seed=0), now=fixed_now).ideate(THEME)
     assert not any(t.agent == "rerank" for t in result.trace)
     # The exact count is theme/prompt dependent under the mock (diversity filter); see the agents owner's notes.
-    assert settings.ideas_per_round <= len(result.ideas) <= settings.ideas_per_round * result.iterations
+    assert (
+        len(result.ideas) + result.dropped_duplicate
+        == settings.ideas_per_round * result.iterations
+    )
     assert sorted(result.ranking) == sorted(i.id for i in result.ideas)
 
 
@@ -377,7 +380,7 @@ def test_run_without_the_meta_layer_keeps_the_baseline_shape(settings):
     assert result.strategy is None and result.reflection is None
     assert result.iterations == settings.max_iterations
     assert len(result.trace) == (
-        1 + result.retrieval_rounds + 1 + result.iterations * (1 + len(settings.judge_personas)) + 1
+        1 + result.retrieval_rounds + 1 + result.iterations * (2 + len(settings.judge_personas)) + 1
     )
     assert not any(t.agent in ("strategist", "reflector") for t in result.trace)
     assert len(system.meta) == 0 and not Path(settings.meta_path).exists()

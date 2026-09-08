@@ -38,6 +38,11 @@ def salient_tokens(prompt: str) -> list[str]:
     return ranked
 
 
+def _path_marker(path: str) -> str:
+    """A short stable pseudo-word unique to a JSON path, so sibling placeholders differ."""
+    return "mk" + _seed(path).to_bytes(8, "big").hex()[:6]
+
+
 def _leaf(path: str) -> str:
     stripped = _INDEX_RE.sub("", path)
     return stripped.rsplit(".", 1)[-1] or "value"
@@ -136,10 +141,17 @@ class _Synthesizer:
         self.salient = salient_tokens(prompt)
 
     def words(self, path: str) -> str:
-        """Four salient tokens drawn by the rng seeded from seed|tag|prompt(|path)."""
+        """Salient tokens for this path, plus a marker that makes siblings distinguishable.
+
+        Drawing every string from one small pool made array siblings almost identical — a batch
+        of eight mock ideas measured 0.72-0.87 pairwise cosine, which any correct deduplication
+        filter collapses to one. Placeholders that cannot be told apart cannot exercise the stages
+        downstream of them, so each path also carries a short stable token derived from itself.
+        """
         parts = (self.seed, self.tag, self.prompt) + ((path,) if path else ())
         rng = random.Random(_seed(*parts))
-        return " ".join(rng.sample(self.salient, _WORDS_PER_STRING))
+        drawn = rng.sample(self.salient, _WORDS_PER_STRING)
+        return " ".join([*drawn, _path_marker(path)]) if path else " ".join(drawn)
 
     def generate(self, schema: dict, path: str) -> object:
         if "enum" in schema:

@@ -131,8 +131,13 @@ def test_round_one_under_mock(kb, tmp_path):
     state = prepared_state(ctx, must_avoid=["blockchain"])
     CreativityAgent().run(state, ctx)
     assert state.iteration == 1
-    assert [i.id for i in state.ideas] == [f"idea-1-{k}" for k in range(1, 9)]
-    assert [i.technique for i in state.ideas] == [TECHNIQUES[k % 6] for k in range(8)]
+    # Ids stay sequential; the count reflects both dedup stages, which the mock exercises.
+    assert [i.id for i in state.ideas] == [f"idea-1-{k}" for k in range(1, len(state.ideas) + 1)]
+    assert len(state.ideas) + state.dropped_duplicate == 8
+    # Techniques still cycle in order; dedup may remove members, so this is a subsequence.
+    cycle = [TECHNIQUES[k % 6] for k in range(8)]
+    it = iter(cycle)
+    assert all(t in it for t in [i.technique for i in state.ideas])
     assert all(i.parent_id is None for i in state.ideas)
     assert all(validate_idea(i, state.constraints) == [] for i in state.ideas)
     creativity_calls = [c for c in mock.calls if c.tag == "creativity"]
@@ -147,7 +152,7 @@ def test_round_one_under_mock(kb, tmp_path):
     assert {rc.chunk.id for rc in state.knowledge} <= shown
     assert all(i.citations and set(i.citations) <= shown for i in state.ideas)
     assert ctx.queries_issued[-1] == state.theme  # the antipattern retrieval
-    assert [t.agent for t in ctx.trace] == ["creativity"]
+    assert [t.agent for t in ctx.trace] == ["creativity", "dedupe"]
 
 
 def test_round_two_sets_parent_ids_and_appends(kb, tmp_path):
@@ -163,7 +168,7 @@ def test_round_two_sets_parent_ids_and_appends(kb, tmp_path):
     state.critiques = ["critique alpha", "lowest criterion: novelty"]
     CreativityAgent().run(state, ctx)
     assert state.iteration == 2
-    assert state.ideas[:8] == first  # append semantics
+    assert state.ideas[: len(first)] == first  # append semantics; dedup sets the count
     new = state.ideas[8:]
     assert new and all(i.id.startswith("idea-2-") for i in new)
     top3 = state.ranking[:3]
