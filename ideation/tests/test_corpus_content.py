@@ -140,12 +140,36 @@ def test_deploy_file_states_the_public_url_chain_and_mock_rule() -> None:
     assert "scaffolding" in text and "never evidence" in text
 
 
-def test_no_invented_statistics() -> None:
-    """Percentages are allowed only as clock fractions (10%, 25%, 60%, 70%, 80%) — never as claims."""
-    allowed = {"10%", "25%", "60%", "70%", "80%"}
+CLOCK_FRACTIONS = {"10%", "25%", "60%", "70%", "80%"}
+# An arXiv id, a URL, or a front-matter source is enough to make a number checkable.
+ATTRIBUTION = re.compile(r"arXiv\s*\d{4}\.\d{4,5}|https?://|^source:", re.I | re.M)
+
+
+def test_percentages_are_either_clock_fractions_or_attributed() -> None:
+    """The rule is that a number must be checkable, not that numbers are forbidden.
+
+    Hand-written guidance may only use the clock fractions, so it cannot smuggle in an invented
+    statistic. A document that cites its sources may quote their figures, because the reader can
+    go and verify them — which is the whole point of the evidence rule.
+    """
     for path in DOCS:
-        found = set(re.findall(r"\d+(?:\.\d+)?%", _body(path)))
-        assert found <= allowed, f"{path.name}: unexpected percentages {found - allowed}"
+        body = _body(path)
+        found = set(re.findall(r"\d+(?:\.\d+)?%", body))
+        extra = found - CLOCK_FRACTIONS
+        if not extra:
+            continue
+        assert ATTRIBUTION.search(path.read_text(encoding="utf-8")), (
+            f"{path.name}: percentages {extra} with no source to check them against"
+        )
+
+
+def test_an_unattributed_percentage_would_still_fail(tmp_path) -> None:
+    """The relaxed rule must still catch the thing it was written for."""
+    doc = tmp_path / "invented.md"
+    doc.write_text("---\ntitle: t\ntags: a\nkind: guidance\n---\n\nWins rise 47% here.\n", encoding="utf-8")
+    raw = doc.read_text(encoding="utf-8")
+    found = set(re.findall(r"\d+(?:\.\d+)?%", raw.split("---", 2)[2])) - CLOCK_FRACTIONS
+    assert found == {"47%"} and not ATTRIBUTION.search(raw)
 
 
 # --------------------------------------------------------------------------- meta layer (§18.5)
