@@ -318,8 +318,8 @@ def test_creativity_counts_dropped_ideas_for_the_reflection(tmp_path):
     good = _raw_idea("Gauge alerts for wardens")
     invalid = _raw_idea("Dashboard for everyone", target_user="everyone")
     duplicate = _raw_idea("Gauge alerts for wardens")
-    batch = {"ideas": [good, invalid, duplicate]}
-    mock = MockLLM(seed=0, scripted={"creativity": [batch, {"ideas": [good, invalid, duplicate]}]})
+    batch = {"distinct_angles": ["a1", "a2", "a3"], "ideas": [good, invalid, duplicate]}
+    mock = MockLLM(seed=0, scripted={"creativity": [batch, dict(batch)]})
     ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=3)
     state = IdeationState(THEME, HackathonConstraints())
     state.knowledge = ctx.retrieve(THEME, k=2)

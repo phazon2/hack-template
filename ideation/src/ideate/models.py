@@ -299,6 +299,7 @@ class IdeationState(Model):
     research: ResearchFindings | None = None
     assessment: TechnicalAssessment | None = None
     ideas: list[Idea] = field(default_factory=list)
+    angles: list[str] = field(default_factory=list)
     verdicts: list[PanelVerdict] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
     pairwise_wins: dict[str, int] = field(default_factory=dict)
@@ -342,6 +343,7 @@ class IdeationResult(Model):
     research: ResearchFindings | None = None
     assessment: TechnicalAssessment | None = None
     ideas: list[Idea] = field(default_factory=list)
+    angles: list[str] = field(default_factory=list)
     verdicts: list[PanelVerdict] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
     pairwise_wins: dict[str, int] = field(default_factory=dict)

@@ -9,12 +9,15 @@ from ideate.agents.creativity import (
     GENERIC_USERS,
     CreativityAgent,
     batch_schema,
+    creativity_prompt,
     diverse,
     idea_schema,
     jaccard,
     simple_tokens,
     validate_idea,
+    winner_examples_block,
 )
+from ideate.evaluation.pairwise import references_from_corpus
 from ideate.config import Settings
 from ideate.evaluation.rubric import DEFAULT_RUBRIC
 from ideate.evaluation.scoring import aggregate
@@ -55,6 +58,11 @@ def raw_idea(title: str, **kw) -> dict:
     return d
 
 
+def raw_batch(*ideas: dict) -> dict:
+    """A scripted creativity response: the chain-of-thought angles the schema requires, then ideas."""
+    return {"distinct_angles": [f"angle {n}" for n in range(1, len(ideas) + 1)], "ideas": list(ideas)}
+
+
 def prepared_state(ctx: RunContext, theme: str = "AI for climate resilience", **constraints) -> IdeationState:
     state = IdeationState(theme, HackathonConstraints(**constraints))
     state.knowledge = ctx.retrieve(theme, k=6)
@@ -91,6 +99,59 @@ def test_must_avoid_matches_stemmed_tokens_and_phrases():
     assert validate_idea(good_idea(title="Chatbots for wardens"), c) == ["uses must-avoid term 'chatbot'"]
     assert validate_idea(good_idea(description="an assistant with voice input"), c) == ["uses must-avoid term 'voice assistant'"]
     assert validate_idea(good_idea(description="a voice memo"), c) == []
+
+
+# --------------------------------------------------------------------------- chain of thought
+def test_batch_schema_reasons_before_it_answers():
+    """distinct_angles must come first: structured output fills properties in order."""
+    schema = batch_schema(3, ["doc#0"], 36)
+    assert list(schema["properties"]) == ["distinct_angles", "ideas"]
+    assert schema["required"][0] == "distinct_angles"
+    angles = schema["properties"]["distinct_angles"]
+    assert angles["minItems"] == angles["maxItems"] == 3  # one per idea slot
+
+
+def test_prompt_asks_for_the_angles_before_the_ideas(kb, tmp_path):
+    ctx = make_ctx(kb, tmp_path, ideas_per_round=4)
+    prompt = creativity_prompt(prepared_state(ctx), 4, [], [], [])
+    assert "Before writing any idea, fill distinct_angles with exactly 4 entries" in prompt
+    assert "differ from each other on the user and the mechanism, not only on wording" in prompt
+
+
+def test_angles_are_recorded_on_the_state(kb, tmp_path):
+    mock = MockLLM(seed=0, scripted={"creativity": [raw_batch(raw_idea("Bus delay explainer"))]})
+    ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=1)
+    state = prepared_state(ctx)
+    CreativityAgent().run(state, ctx)
+    assert state.angles == ["angle 1"]
+
+
+# --------------------------------------------------------------------------- few-shot winners
+def test_winner_examples_block_shows_shape_and_bans_the_subject():
+    block = winner_examples_block(["AccessForm: Call. Talk. Your form is filled."])
+    assert "- AccessForm: Call. Talk. Your form is filled." in block
+    assert "examples of shape only" in block
+    # Without the ban the examples leak their domains into the batch.
+    assert "Never reuse their subject matter, their domains, their product names" in block
+    assert winner_examples_block([]) == ""
+
+
+def test_prompt_omits_the_examples_when_there_are_no_references(kb, tmp_path):
+    ctx = make_ctx(kb, tmp_path)
+    state = prepared_state(ctx)
+    assert "examples of shape only" not in creativity_prompt(state, 2, [], [], [])
+    assert "examples of shape only" in creativity_prompt(state, 2, [], [], [], ["W: a tagline"])
+
+
+def test_run_feeds_real_winner_taglines_into_the_prompt(kb, tmp_path):
+    """The bundled corpus carries real winner taglines, so a run must actually show them."""
+    mock = MockLLM(seed=0)
+    ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=2)
+    CreativityAgent().run(prepared_state(ctx), ctx)
+    prompt = [c for c in mock.calls if c.tag == "creativity"][0].prompt
+    references = references_from_corpus(ctx.settings)
+    assert references, "the bundled corpus should provide winner references"
+    assert all(ref in prompt for ref in references)
 
 
 # --------------------------------------------------------------------------- diversity
@@ -206,7 +267,7 @@ def test_round_two_sets_parent_ids_and_appends(kb, tmp_path):
 
 
 def test_one_whole_call_retry_keeps_survivors_of_both_calls(kb, tmp_path):
-    scripted = {"creativity": [{"ideas": [raw_idea("Good one"), raw_idea("Bad one", target_user="users")]}]}
+    scripted = {"creativity": [raw_batch(raw_idea("Good one"), raw_idea("Bad one", target_user="users"))]}
     mock = MockLLM(seed=0, scripted=scripted)
     ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=2)
     state = prepared_state(ctx)
@@ -221,18 +282,18 @@ def test_one_whole_call_retry_keeps_survivors_of_both_calls(kb, tmp_path):
 
 
 def test_no_survivors_after_retry_raises(kb, tmp_path):
-    bad = {"ideas": [raw_idea("Bad", target_user="people")]}
+    bad = raw_batch(raw_idea("Bad", target_user="people"))
     mock = MockLLM(seed=0, scripted={"creativity": [bad, bad]})
     ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=1)
     state = prepared_state(ctx)
-    with pytest.raises(LLMBadOutput):
+    with pytest.raises(LLMBadOutput, match="no idea passed validation"):
         CreativityAgent().run(state, ctx)
     assert len([c for c in mock.calls if c.tag == "creativity"]) == 2
     assert state.ideas == []
 
 
 def test_diversity_filter_applies_to_scripted_batch(kb, tmp_path):
-    scripted = {"creativity": [{"ideas": [raw_idea("Bus delay explainer"), raw_idea("Bus delay explainer", one_liner="Bus delay explainer in a sentence")]}]}
+    scripted = {"creativity": [raw_batch(raw_idea("Bus delay explainer"), raw_idea("Bus delay explainer", one_liner="Bus delay explainer in a sentence"))]}
     mock = MockLLM(seed=0, scripted=scripted)
     ctx = make_ctx(kb, tmp_path, llm=mock, ideas_per_round=2)
     state = prepared_state(ctx)

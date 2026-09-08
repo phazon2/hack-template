@@ -24,6 +24,7 @@ from ideate.models import (
     TraceStep,
 )
 from ideate.report import (
+    ANGLES_HEADING,
     NO_NEW_PATTERNS,
     PLACEHOLDER_BANNER,
     judgement_dict,
@@ -185,6 +186,16 @@ def test_table_shows_wins_against_real_winners(result):
     assert [r.split("|")[4].strip() for r in rows] == ["4", "0", "-"]  # idea-1-3 was not compared
     result.pairwise_wins = wins
     assert render_ranking_table(result.ideas, result.verdicts, result.ranking, wins) in render_markdown(result)
+
+
+def test_angles_section_appears_only_when_the_batch_reasoned(result):
+    """The angles are the visible evidence the chain-of-thought step ran, so the report shows them."""
+    assert ANGLES_HEADING not in render_markdown(result)
+    result.angles = ["night nurse, ward handover", "port dispatcher, storm closure"]
+    md = render_markdown(result)
+    assert ANGLES_HEADING in md
+    assert "- night nurse, ward handover" in md and "- port dispatcher, storm closure" in md
+    assert md.index(ANGLES_HEADING) < md.index("## 6. All ideas")
 
 
 def test_table_handles_unjudged_ideas():

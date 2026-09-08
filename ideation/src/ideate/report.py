@@ -24,6 +24,7 @@ PLACEHOLDER_BANNER = "PROVIDER: mock — placeholder content, not evidence"
 FEASIBILITY = "feasibility"
 NEUTRAL_SCORE = 3.0
 STRATEGY_HEADING = "## 1a. Strategy"
+ANGLES_HEADING = "## 5a. Angles the batch set out to cover"
 LEARNED_HEADING = "## 10. What the system learned"
 NO_NEW_PATTERNS = "none new (nothing this run observed was missing from meta memory)"
 TABLE_HEADER = "| # | Idea | Technique | Beats | Weighted | Feasibility | Agreement | Disqualified |\n|---|---|---|---|---|---|---|---|"
@@ -372,6 +373,11 @@ def render_markdown(result: IdeationResult, meta_patterns: list[MetaPattern] | N
     lines += ["### Pivot trigger", "", f"- {proposal.pivot_trigger or 'none stated'}", ""]
     lines += ["## 4. Human dependencies", ""] + _bullets(proposal.human_dependencies) + [""]
     lines += _runner_ups(result, proposal) + [""]
+    if result.angles:
+        # The angles the model committed to before writing any idea. They are here because
+        # diversity is what this pipeline is trying to buy, and this is the only place a reader can
+        # see whether the batch actually set out to cover different ground or just said it did.
+        lines += [ANGLES_HEADING, ""] + _bullets(result.angles) + [""]
     lines += [
         "## 6. All ideas",
         "",

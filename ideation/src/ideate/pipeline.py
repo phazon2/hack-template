@@ -72,6 +72,7 @@ def result_from_state(
         research=state.research,
         assessment=state.assessment,
         ideas=list(state.ideas),
+        angles=list(state.angles),
         verdicts=list(state.verdicts),
         ranking=list(state.ranking),
         pairwise_wins=dict(state.pairwise_wins),
@@ -96,6 +97,7 @@ def state_from_result(result: IdeationResult) -> IdeationState:
     state.research = result.research
     state.assessment = result.assessment
     state.ideas = list(result.ideas)
+    state.angles = list(result.angles)
     state.verdicts = list(result.verdicts)
     state.ranking = list(result.ranking)
     state.pairwise_wins = dict(result.pairwise_wins)

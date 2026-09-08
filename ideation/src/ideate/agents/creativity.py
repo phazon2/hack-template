@@ -8,6 +8,7 @@ from ideate.agents.base import Agent
 from ideate.agents.dedupe import drop_semantic_duplicates
 from ideate.agents.context import RunContext, constraints_block, knowledge_block
 from ideate.agents.research import citations_schema, known_ids
+from ideate.evaluation.pairwise import references_from_corpus
 from ideate.knowledge.embeddings import HashingEmbedder
 from ideate.knowledge.tokenize import tokenize
 from ideate.meta.ingest import TRUST_NOTE
@@ -83,8 +84,21 @@ def idea_schema(shown_ids: list[str], hours: int, parent_ids: list[str] | None =
 
 
 def batch_schema(n: int, shown_ids: list[str], hours: int, parent_ids: list[str] | None = None) -> dict:
-    """``obj({"ideas": arr(IDEA_SCHEMA, n, n)})``."""
-    return obj({"ideas": arr(idea_schema(shown_ids, hours, parent_ids), n, n)})
+    """The batch: ``distinct_angles`` reasoned out first, then ``ideas``.
+
+    Structured output fills properties in order, so putting the angles first makes the model commit
+    to n different directions before it writes a single idea — chain-of-thought, in the one place
+    the schema lets us put it. Meincke et al. (arXiv 2402.01727) tested 35 prompting strategies for
+    idea diversity and chain-of-thought produced both the highest dispersion and the most unique
+    ideas, coming close to groups of humans. Diversity is the measured bottleneck here, so this
+    reasoning step is load-bearing rather than decorative.
+    """
+    return obj(
+        {
+            "distinct_angles": arr(str_(), n, n),
+            "ideas": arr(idea_schema(shown_ids, hours, parent_ids), n, n),
+        }
+    )
 
 
 # --------------------------------------------------------------------------- validation
@@ -216,7 +230,35 @@ def refinement_block(state: IdeationState, top3: list[Idea]) -> str:
     return "\n\n".join(parts)
 
 
-def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk], antipatterns: list[RetrievedChunk], top3: list[Idea]) -> str:
+def winner_examples_block(references: list[str]) -> str:
+    """Real winning one-liners as few-shot examples of shape, with an explicit ban on their subject.
+
+    Girotra et al. found that showing highly rated examples improved output, and real winner text is
+    the only source of "highly rated" this system has that a judge actually rated. The ban matters:
+    without it the examples leak their domains into the ideas, and the batch converges on other
+    events' themes — which is the same duplication failure arriving by a different route.
+    """
+    if not references:
+        return ""
+    return (
+        "One-liners from projects that really won their hackathons, as examples of shape only:\n\n"
+        + _bullets(references, "")
+        + "\n\nCopy how these work — a concrete moment or a stated bet, what the system does and "
+        "where it stops, a mechanism a stranger could go and check, short enough for a judge to "
+        "repeat from memory. Never reuse their subject matter, their domains, their product names "
+        "or their phrasing: these won other events, and repeating them here is plagiarism of the "
+        "obvious."
+    )
+
+
+def creativity_prompt(
+    state: IdeationState,
+    n: int,
+    shown: list[RetrievedChunk],
+    antipatterns: list[RetrievedChunk],
+    top3: list[Idea],
+    references: list[str] | None = None,
+) -> str:
     """User prompt for one creativity call (a pure function of the state and the shown chunks)."""
     building_blocks = state.assessment.building_blocks if state.assessment else []
     hours = state.constraints.hours
@@ -231,6 +273,14 @@ def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk],
             f"{knowledge_block(antipatterns) or '(none retrieved)'}"
         ),
         f"Knowledge snippets ({len(shown)}):\n\n{knowledge_block(shown)}",
+        (
+            f"Before writing any idea, fill distinct_angles with exactly {n} entries, one per slot, "
+            "in slot order. Each names the specific person in the specific situation that slot will "
+            "serve and the angle its technique takes on the theme. Make them differ from each other "
+            "on the user and the mechanism, not only on wording — two angles that serve the same "
+            "person the same way are one angle, and the batch is worth less for it. Then write the "
+            "ideas, each one following the angle you set for its slot."
+        ),
         (
             "Rules for the batch:\n"
             f"- at least {MIN_DISTINCT_USERS} distinct target_users across the batch, each a named role in a named situation\n"
@@ -247,6 +297,9 @@ def creativity_prompt(state: IdeationState, n: int, shown: list[RetrievedChunk],
             "be repeatable from memory by a judge who heard it once"
         ),
     ]
+    examples = winner_examples_block(references or [])
+    if examples:
+        parts.append(examples)
     if top3:
         parts.append(refinement_block(state, top3))
     strategy = strategy_lines(state)
@@ -308,14 +361,18 @@ class CreativityAgent(Agent):
         top3 = [i for i in (state.idea_for(i) for i in state.ranking[:3]) if i is not None] if state.iteration >= 2 else []
         parent_ids = [i.id for i in top3] if state.iteration >= 2 else None
         schema = batch_schema(n, shown_ids, state.constraints.hours, parent_ids)
-        prompt = creativity_prompt(state, n, shown, antipatterns, top3)
+        prompt = creativity_prompt(state, n, shown, antipatterns, top3, references_from_corpus(ctx.settings))
 
-        survivors, violations = self._generate(ctx, prompt, schema, state, shown_ids, parent_ids)
+        survivors, violations, angles = self._generate(ctx, prompt, schema, state, shown_ids, parent_ids)
         state.dropped_invalid += len(violations)
         if violations:
-            more, retry_violations = self._generate(ctx, retry_prompt(prompt, violations), schema, state, shown_ids, parent_ids)
+            more, retry_violations, retry_angles = self._generate(
+                ctx, retry_prompt(prompt, violations), schema, state, shown_ids, parent_ids
+            )
             state.dropped_invalid += len(retry_violations)
             survivors.extend(more)
+            angles.extend(retry_angles)
+        state.angles.extend(angles)
         if not survivors:
             raise LLMBadOutput(f"creativity round {state.iteration}: no idea passed validation after one retry")
         # Provisional ids so the semantic pass can refer to candidates; final ids are assigned
@@ -340,10 +397,11 @@ class CreativityAgent(Agent):
         state: IdeationState,
         shown_ids: list[str],
         parent_ids: list[str] | None,
-    ) -> tuple[list[Idea], list[str]]:
-        """One call; returns the ideas that pass ``validate_idea`` and the violations of the rest."""
+    ) -> tuple[list[Idea], list[str], list[str]]:
+        """One call; the ideas passing ``validate_idea``, the violations of the rest, and the angles."""
         data = ctx.llm.complete(ctx.request(CREATIVITY_TAG, CREATIVITY_SYSTEM, prompt, schema)).data
         raw_ideas = data.get("ideas", []) if isinstance(data, dict) else []
+        angles = [str(a) for a in (data.get("distinct_angles") or [])] if isinstance(data, dict) else []
         survivors: list[Idea] = []
         violations: list[str] = []
         for position, raw in enumerate(raw_ideas, 1):
@@ -355,4 +413,4 @@ class CreativityAgent(Agent):
                 violations.append(f"idea {position} ({idea.title}): " + "; ".join(flags))
             else:
                 survivors.append(idea)
-        return survivors, violations
+        return survivors, violations, angles
