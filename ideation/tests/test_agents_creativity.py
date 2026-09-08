@@ -110,6 +110,29 @@ def test_diverse_drops_later_near_duplicates_including_previous_rounds():
     assert diverse([dup], []) == [dup]
 
 
+def test_diverse_keeps_a_refinement_of_its_own_parent():
+    """Round two exists to improve on round one, so a refinement must survive resembling its parent.
+
+    Without the exemption the filter deletes the improved version and keeps the original it was
+    generated to replace, which inverts the point of iterating.
+    """
+    earlier = [Idea("Flood alert for river wardens", "", id="idea-1-1", one_liner="gauge based alerts")]
+    refined = Idea("Flood alerts for river wardens", "", one_liner="gauge based alert", parent_id="idea-1-1")
+    assert diverse([refined], earlier) == [refined]
+    # The exemption is specific to the named parent, not a blanket pass for anything with a parent.
+    assert diverse([Idea(refined.title, "", one_liner=refined.one_liner, parent_id="idea-1-9")], earlier) == []
+    # And an unparented near-copy of an earlier idea is still a duplicate.
+    assert diverse([Idea(refined.title, "", one_liner=refined.one_liner)], earlier) == []
+
+
+def test_diverse_still_dedupes_refinements_of_the_same_parent():
+    """Two refinements of one parent are exempt from the parent, never from each other."""
+    earlier = [Idea("Flood alert for river wardens", "", id="idea-1-1", one_liner="gauge based alerts")]
+    a = Idea("Flood alerts for river wardens", "", id="cand-2-1", one_liner="gauge based alert", parent_id="idea-1-1")
+    b = Idea("Flood alerts for river warden", "", id="cand-2-2", one_liner="gauge based alerts", parent_id="idea-1-1")
+    assert diverse([a, b], earlier) == [a]
+
+
 # --------------------------------------------------------------------------- schema
 def test_idea_schema_shape():
     s = idea_schema(["c1", "c2"], 24)
@@ -169,11 +192,14 @@ def test_round_two_sets_parent_ids_and_appends(kb, tmp_path):
     CreativityAgent().run(state, ctx)
     assert state.iteration == 2
     assert state.ideas[: len(first)] == first  # append semantics; dedup sets the count
-    new = state.ideas[8:]
+    new = state.ideas[len(first) :]
     assert new and all(i.id.startswith("idea-2-") for i in new)
     top3 = state.ranking[:3]
     assert all(i.parent_id is None or i.parent_id in top3 for i in new)
-    assert any(i.parent_id is not None for i in new) and any(i.parent_id is None for i in new)
+    # The schema offers "new" alongside the top three (asserted below), but how many unparented
+    # candidates survive is not a property of this agent: round two regenerates near-copies of
+    # round one, and dedup drops them on their similarity, whatever their parent_id says.
+    assert any(i.parent_id is not None for i in new)
     call = [c for c in mock.calls if c.tag == "creativity"][1]
     assert call.json_schema["properties"]["ideas"]["items"]["properties"]["parent_id"]["enum"] == top3 + ["new"]
     assert "critique alpha" in call.prompt and f"weak {top3[0]}" in call.prompt and first[0].title in call.prompt

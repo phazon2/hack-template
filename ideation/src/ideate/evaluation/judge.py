@@ -207,19 +207,29 @@ class PanelJudge:
         return self.evaluate_many([idea], context)[0]
 
 
-def rank_ideas(ideas: list[Idea], verdicts: list[PanelVerdict]) -> list[str]:
+def rank_ideas(
+    ideas: list[Idea],
+    verdicts: list[PanelVerdict],
+    pairwise: dict[str, int] | None = None,
+) -> list[str]:
     """Tiered ranking, a permutation of all idea ids.
 
+    Tiers come from the panel, which is reliable at spotting a disqualification or an unbuildable
+    idea. Order *within* a tier comes from ``pairwise`` when it is available — wins against real
+    winners — because LLM rubric scores rank ideas at roughly chance (see
+    ``evaluation/pairwise.py``). Without pairwise scores the panel's weighted score orders the
+    tier, which is the previous behaviour and the honest fallback.
+
     Tier 1: not disqualified and consensus feasibility > 2; tier 2: not disqualified with
-    feasibility <= 2; tier 3: disqualified. Within a tier: ``(-weighted_score, title, id)``.
-    Ideas without a feasibility criterion count as feasibility 3.
+    feasibility <= 2; tier 3: disqualified. Ideas without a feasibility criterion count as 3.
     """
+    wins = pairwise or {}
     by_id = {v.idea_id: v for v in verdicts}
     missing = [idea.id for idea in ideas if idea.id not in by_id]
     if missing:
         raise ValueError(f"no verdict for idea ids {missing}")
 
-    def key(idea: Idea) -> tuple[int, float, str, str]:
+    def key(idea: Idea) -> tuple[int, int, float, str, str]:
         consensus = by_id[idea.id].consensus
         if consensus.disqualified:
             tier = 3
@@ -227,12 +237,17 @@ def rank_ideas(ideas: list[Idea], verdicts: list[PanelVerdict]) -> list[str]:
             tier = 2
         else:
             tier = 1
-        return (tier, -consensus.weighted_score, idea.title, idea.id)
+        return (tier, -wins.get(idea.id, 0), -consensus.weighted_score, idea.title, idea.id)
 
     return [idea.id for idea in sorted(ideas, key=key)]
 
 
-def compare_ideas(panel: PanelJudge, ideas: list[Idea], context: str) -> tuple[list[PanelVerdict], list[str]]:
+def compare_ideas(
+    panel: PanelJudge,
+    ideas: list[Idea],
+    context: str,
+    pairwise: dict[str, int] | None = None,
+) -> tuple[list[PanelVerdict], list[str]]:
     """Judge a batch with the panel and rank it (see ``rank_ideas``)."""
     verdicts = panel.evaluate_many(ideas, context)
-    return verdicts, rank_ideas(ideas, verdicts)
+    return verdicts, rank_ideas(ideas, verdicts, pairwise)

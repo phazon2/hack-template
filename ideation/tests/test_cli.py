@@ -433,7 +433,7 @@ def test_run_without_the_meta_layer_matches_the_baseline_trace(cli_env, tmp_path
     assert data["settings"]["strategist"] is False and data["settings"]["reflector"] is False
     personas = len(data["settings"]["judge_personas"])
     assert len(data["trace"]) == (
-        1 + data["retrieval_rounds"] + 1 + data["iterations"] * (2 + personas) + 1
+        1 + data["retrieval_rounds"] + 1 + data["iterations"] * (3 + personas) + 1
     )
     assert not any(t["agent"] in ("strategist", "reflector") for t in data["trace"])
     assert meta_records(cli_env) == []

@@ -26,7 +26,7 @@ NEUTRAL_SCORE = 3.0
 STRATEGY_HEADING = "## 1a. Strategy"
 LEARNED_HEADING = "## 10. What the system learned"
 NO_NEW_PATTERNS = "none new (nothing this run observed was missing from meta memory)"
-TABLE_HEADER = "| # | Idea | Technique | Weighted | Feasibility | Agreement | Disqualified |\n|---|---|---|---|---|---|---|"
+TABLE_HEADER = "| # | Idea | Technique | Beats | Weighted | Feasibility | Agreement | Disqualified |\n|---|---|---|---|---|---|---|---|"
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -61,8 +61,16 @@ def _ordered_ids(ideas: list[Idea], ranking: list[str]) -> list[str]:
 
 
 # --------------------------------------------------------------------------- shared blocks
-def render_ranking_table(ideas: list[Idea], verdicts: list[PanelVerdict], ranking: list[str]) -> str:
-    """The all-ideas table (title, technique, weighted, feasibility, agreement, disqualified) in ranking order."""
+def render_ranking_table(
+    ideas: list[Idea], verdicts: list[PanelVerdict], ranking: list[str], pairwise: dict[str, int] | None = None
+) -> str:
+    """The all-ideas table in ranking order.
+
+    "Beats" is how many real hackathon winners the idea was judged to beat head to head, and it is
+    what orders each tier — so without the column the ranking looks like it disagrees with the
+    weighted score for no reason. It shows "-" when no winner references were available.
+    """
+    wins = pairwise or {}
     by_idea, by_verdict = _idea_map(ideas), _verdict_map(verdicts)
     rows = [TABLE_HEADER]
     for n, idea_id in enumerate(_ordered_ids(ideas, ranking), 1):
@@ -78,7 +86,10 @@ def render_ranking_table(ideas: list[Idea], verdicts: list[PanelVerdict], rankin
             feasibility = f"{c.score_for(FEASIBILITY, NEUTRAL_SCORE):.1f}"
             agreement = f"{verdict.agreement:.2f}"
             disqualified = "yes" if c.disqualified else "no"
-        rows.append(f"| {n} | {_cell(title)} ({idea_id}) | {technique} | {weighted} | {feasibility} | {agreement} | {disqualified} |")
+        beats = str(wins[idea_id]) if idea_id in wins else "-"
+        rows.append(
+            f"| {n} | {_cell(title)} ({idea_id}) | {technique} | {beats} | {weighted} | {feasibility} | {agreement} | {disqualified} |"
+        )
     return "\n".join(rows)
 
 
@@ -361,7 +372,12 @@ def render_markdown(result: IdeationResult, meta_patterns: list[MetaPattern] | N
     lines += ["### Pivot trigger", "", f"- {proposal.pivot_trigger or 'none stated'}", ""]
     lines += ["## 4. Human dependencies", ""] + _bullets(proposal.human_dependencies) + [""]
     lines += _runner_ups(result, proposal) + [""]
-    lines += ["## 6. All ideas", "", render_ranking_table(result.ideas, result.verdicts, result.ranking), ""]
+    lines += [
+        "## 6. All ideas",
+        "",
+        render_ranking_table(result.ideas, result.verdicts, result.ranking, result.pairwise_wins),
+        "",
+    ]
     lines += ["## 7. Idea details", ""]
     for idea_id in _ordered_ids(result.ideas, result.ranking):
         idea = by_idea.get(idea_id)

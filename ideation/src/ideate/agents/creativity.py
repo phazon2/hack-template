@@ -156,12 +156,17 @@ def diverse(candidates: list[Idea], earlier: list[Idea], threshold: float = DIVE
     embedder = HashingEmbedder(dim=DIVERSITY_DIM)
     embedder.fit(texts)
     vectors = embedder.embed(texts)
-    seen = vectors[: len(earlier)]
+    seen = [(idea.id, vector) for idea, vector in zip(earlier, vectors)]
     kept: list[Idea] = []
     for idea, vector in zip(candidates, vectors[len(earlier) :]):
-        if any(cosine(vector, other) > threshold for other in seen):
+        # A candidate carrying parent_id is a deliberate refinement of that idea, so resembling its
+        # own parent is the point of generating it, not evidence of a repeat. Without this the
+        # filter systematically deletes round two's improvements and keeps the originals they were
+        # meant to replace — the opposite of what iterating is for. It is still compared against
+        # every other earlier idea and against the rest of its own batch.
+        if any(other_id != idea.parent_id and cosine(vector, other) > threshold for other_id, other in seen):
             continue
-        seen.append(vector)
+        seen.append((idea.id, vector))
         kept.append(idea)
     return kept
 

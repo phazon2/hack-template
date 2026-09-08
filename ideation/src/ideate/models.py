@@ -301,6 +301,7 @@ class IdeationState(Model):
     ideas: list[Idea] = field(default_factory=list)
     verdicts: list[PanelVerdict] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
+    pairwise_wins: dict[str, int] = field(default_factory=dict)
     proposal: Proposal | None = None
     critiques: list[str] = field(default_factory=list)
     iteration: int = 0
@@ -343,6 +344,7 @@ class IdeationResult(Model):
     ideas: list[Idea] = field(default_factory=list)
     verdicts: list[PanelVerdict] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
+    pairwise_wins: dict[str, int] = field(default_factory=dict)
     proposal: Proposal | None = None
     iterations: int = 0
     retrieval_rounds: int = 0

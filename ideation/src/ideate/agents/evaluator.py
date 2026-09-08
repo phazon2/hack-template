@@ -5,6 +5,7 @@ from __future__ import annotations
 from ideate.agents.base import Agent
 from ideate.agents.context import RunContext, constraints_block
 from ideate.evaluation.judge import PanelJudge, rank_ideas
+from ideate.evaluation.pairwise import pairwise_scores, references_from_corpus
 from ideate.evaluation.rubric import Rubric
 from ideate.models import IdeationState
 
@@ -87,6 +88,28 @@ class EvaluatorAgent(Agent):
         pending = [idea for idea in state.ideas if idea.id not in judged]
         if pending:
             state.verdicts.extend(panel.evaluate_many(pending, judge_context(state)))
-        state.ranking = rank_ideas(state.ideas, state.verdicts)
+            state.pairwise_wins = self._pairwise(state, ctx)
+        # The panel decides tiers; wins against real winners decide the order inside them. With no
+        # new ideas to place, the cached wins re-rank for free: recomputing them would pay for a
+        # comparison whose inputs have not changed, and dropping them would silently reorder.
+        state.ranking = rank_ideas(state.ideas, state.verdicts, state.pairwise_wins)
         state.critiques = critiques_for(state)
         return state
+
+    def _pairwise(self, state: IdeationState, ctx: RunContext) -> dict[str, int]:
+        """Wins against winner taglines pulled from the gallery documents in the corpus.
+
+        With no galleries in the corpus there is nothing to calibrate against, so this returns
+        nothing and the ranking falls back to the panel's own ordering rather than inventing an
+        anchor.
+        """
+        references = references_from_corpus(ctx.settings)
+        if not references:
+            return {}
+        return pairwise_scores(
+            state.ideas,
+            references,
+            ctx.llm,
+            max_tokens=ctx.settings.max_tokens,
+            effort=ctx.settings.effort_light,
+        )

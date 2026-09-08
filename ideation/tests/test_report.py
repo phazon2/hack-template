@@ -170,18 +170,27 @@ def test_runner_ups_choose_instead_if(result):
 
 def test_all_ideas_table_in_ranking_order(result):
     table = render_ranking_table(result.ideas, result.verdicts, result.ranking).splitlines()
-    assert table[0].startswith("| # | Idea | Technique | Weighted | Feasibility | Agreement | Disqualified |")
+    assert table[0].startswith("| # | Idea | Technique | Beats | Weighted | Feasibility | Agreement | Disqualified |")
     rows = table[2:]
     assert [r.split("|")[2].strip() for r in rows] == ["Idea 2 (idea-1-2)", "Idea 1 (idea-1-1)", "Idea 3 (idea-1-3)"]
-    assert rows[0].split("|")[3:8] == [" reverse ", " 3.90 ", " 3.0 ", " 0.90 ", " no "]
-    assert rows[2].split("|")[7].strip() == "yes"
+    assert rows[0].split("|")[3:9] == [" reverse ", " - ", " 3.90 ", " 3.0 ", " 0.90 ", " no "]
+    assert rows[2].split("|")[8].strip() == "yes"
     assert render_ranking_table(result.ideas, result.verdicts, result.ranking) in render_markdown(result)
+
+
+def test_table_shows_wins_against_real_winners(result):
+    """Pairwise wins order each tier, so the report has to show them or the order looks arbitrary."""
+    wins = {"idea-1-2": 4, "idea-1-1": 0}
+    rows = render_ranking_table(result.ideas, result.verdicts, result.ranking, wins).splitlines()[2:]
+    assert [r.split("|")[4].strip() for r in rows] == ["4", "0", "-"]  # idea-1-3 was not compared
+    result.pairwise_wins = wins
+    assert render_ranking_table(result.ideas, result.verdicts, result.ranking, wins) in render_markdown(result)
 
 
 def test_table_handles_unjudged_ideas():
     ideas = [make_idea(1, "direct")]
     rows = render_ranking_table(ideas, [], []).splitlines()
-    assert rows[2] == "| 1 | Idea 1 (idea-1-1) | direct | - | - | - | - |"
+    assert rows[2] == "| 1 | Idea 1 (idea-1-1) | direct | - | - | - | - | - |"
 
 
 def test_per_idea_detail_and_consensus(result):

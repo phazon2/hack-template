@@ -5,6 +5,7 @@ from __future__ import annotations
 from ideate.agents.context import RunContext, TracingLLM, constraints_block
 from ideate.agents.evaluator import Defaulting, EvaluatorAgent, critiques_for, judge_context, persona_text
 from ideate.config import DEFAULT_PERSONAS, Settings
+from ideate.evaluation.pairwise import PAIRWISE_TAG
 from ideate.evaluation.rubric import DEFAULT_RUBRIC
 from ideate.evaluation.scoring import aggregate
 from ideate.llm.mock import MockLLM
@@ -67,6 +68,10 @@ def test_critiques_for_top3_dedup_and_cap():
     assert "never shown" not in critiques and len(set(critiques)) == 9
 
 
+def _score(state, idea_id: str) -> float:
+    return state.verdict_for(idea_id).consensus.weighted_score
+
+
 def test_run_judges_only_unjudged_and_reranks_all(kb, tmp_path):
     mock = MockLLM(seed=0)
     ctx = make_ctx(kb, tmp_path, llm=mock)
@@ -75,11 +80,12 @@ def test_run_judges_only_unjudged_and_reranks_all(kb, tmp_path):
     old = verdict("idea-1-1", ["old weakness"], {"novelty": 5.0, "impact": 5.0, "feasibility": 5.0, "demoability": 5.0})
     state.verdicts = [old]
     EvaluatorAgent().run(state, ctx)
-    assert len(mock.calls) == len(DEFAULT_PERSONAS)
+    # One call per persona to judge, then one pairwise call to order them against real winners.
     expected_tags = [f"judge:{slug(persona_text(p, state))}" for p in DEFAULT_PERSONAS]
-    assert [c.tag for c in mock.calls] == expected_tags
+    assert [c.tag for c in mock.calls] == [*expected_tags, PAIRWISE_TAG]
+    judge_calls = mock.calls[: len(DEFAULT_PERSONAS)]
     assert all(c.effort == ctx.settings.effort_light for c in mock.calls)
-    for call, persona in zip(mock.calls, DEFAULT_PERSONAS):
+    for call, persona in zip(judge_calls, DEFAULT_PERSONAS):
         ids = call.json_schema["properties"]["evaluations"]["items"]["properties"]["idea_id"]["enum"]
         assert ids == ["idea-1-2", "idea-1-3"]
         assert constraints_block(state.constraints) in call.prompt
@@ -87,10 +93,14 @@ def test_run_judges_only_unjudged_and_reranks_all(kb, tmp_path):
         assert "36h for 4 people" in call.system  # rubric anchors substituted from the constraints
     assert state.verdicts[0] is old
     assert {v.idea_id for v in state.verdicts} == {"idea-1-1", "idea-1-2", "idea-1-3"}
-    assert state.ranking == ["idea-1-1", "idea-1-2", "idea-1-3"]  # 5.0 first, then mock 3.0s by title (Alpha < Mid)
+    # Every idea gets a win count, and the ranking follows it: wins against real winners order the
+    # tier, not the panel's weighted score. Ties inside the tier fall back to score, then title.
+    assert set(state.pairwise_wins) == {"idea-1-1", "idea-1-2", "idea-1-3"}
+    by_wins = sorted(state.ideas, key=lambda i: (-state.pairwise_wins[i.id], -_score(state, i.id), i.title))
+    assert state.ranking == [i.id for i in by_wins]
     assert state.critiques[:2] == ["old weakness", "lowest criterion: novelty"]
     assert len(state.critiques) <= 9
-    assert [t.agent for t in ctx.trace] == expected_tags
+    assert [t.agent for t in ctx.trace] == [*expected_tags, PAIRWISE_TAG]
 
 
 def test_run_without_pending_ideas_makes_no_calls(kb, tmp_path):
