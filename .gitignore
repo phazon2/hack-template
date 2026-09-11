@@ -10,8 +10,17 @@ venv/
 dist/
 build/
 
-# Ideation system runtime state
-.ideate/
+# Ideation system state.
+# What the system LEARNS is committed: it is the whole point of the system, and the cloud
+# container is scratch — only pushed git state survives a session. What is merely CACHE or a
+# per-run artifact stays ignored, because it is rebuildable from the corpus and the committed
+# memory (`ideate index`).
+.ideate/*
+!.ideate/memory.jsonl
+!.ideate/meta.jsonl
+!.ideate/charter.md
+!.ideate/fetched/
+.ideate/fetched/**/*.tmp
 *.local.jsonl
 
 # OS / editors

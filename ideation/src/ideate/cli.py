@@ -15,6 +15,14 @@ from typing import Callable
 from ideate import __version__
 from ideate.agents.graph import GraphError
 from ideate.config import Settings, SettingsError
+from ideate.evaluation.winner_features import (
+    enough_data,
+    labelled_from_corpus,
+    pitch_score,
+    shortfall,
+    validate,
+    validated_features,
+)
 from ideate.llm.base import LLMConfigError, LLMError, LLMRefusal, LLMTransientError
 from ideate.llm.factory import resolve_provider
 from ideate.meta.charter import DEFAULT_CHARTER, load_charter, save_charter
@@ -225,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_gallery.add_argument("--reindex", action="store_true", help="rebuild the index afterwards")
     _add_corpus_options(p_gallery)
     p_gallery.set_defaults(handler=cmd_gallery)
+
+    p_score = sub.add_parser("score", help="validate the winner metric against outcome-labelled galleries")
+    p_score.add_argument("text", nargs="?", help="a pitch to score (omit to only show the validation table)")
+    _add_corpus_options(p_score)
+    p_score.set_defaults(handler=cmd_score)
 
     p_gaps = sub.add_parser("gaps", help="what the knowledge base is missing, and the command to fill it")
     p_gaps.add_argument("--max", type=int, default=5, metavar="N", help="results per suggested fetch")
@@ -490,6 +503,44 @@ def cmd_frames(args: argparse.Namespace) -> int:
     notice(f"extracted {len(frames)} frame(s) from {args.path} into {args.out}")
     sys.stdout.write(render_index(frames, Path(args.path).name) + "\n")
     return EXIT_OK
+
+
+def cmd_score(args: argparse.Namespace) -> int:
+    """``ideate score``: what the outcome-labelled data does and does not support.
+
+    Prints every feature with its confidence interval rather than a single headline number,
+    because the headline is what makes an unvalidated metric look usable.
+    """
+    settings = settings_from(args)
+    winners, others = labelled_from_corpus(settings)
+    reports = validate(winners, others)
+    usable = validated_features(reports, winners, others)
+
+    notice(f"labelled data: {len(winners)} winners, {len(others)} non-winners")
+    print(f"{'feature':16} {'AUC':>6} {'95% CI':>14}  {'winners':>8} {'others':>8}  verdict")
+    for r in reports:
+        interval = f"[{r.ci_low:.2f}, {r.ci_high:.2f}]"
+        if r.goodhart_prone:
+            verdict = "barred (gameable)"
+        elif not enough_data(winners, others):
+            verdict = "too little data"
+        else:
+            verdict = "separates" if r.separates else "chance"
+        print(f"{r.name:16} {r.auc:>6.3f} {interval:>14}  {r.winner_mean:>8.2f} {r.other_mean:>8.2f}  {verdict}")
+
+    gap = shortfall(winners, others)
+    if gap:
+        notice(f"metric NOT usable: {gap}")
+    else:
+        notice(f"validated features: {', '.join(usable) if usable else '(none cleared chance)'}")
+
+    if args.text:
+        score = pitch_score(args.text, usable)
+        if score is None:
+            notice("no score: no feature has earned a place in the composite yet")
+            return 1
+        print(f"\nscore {score:.3f}  (mean of {len(usable)} validated feature(s))")
+    return 0
 
 
 def cmd_gallery(args: argparse.Namespace) -> int:

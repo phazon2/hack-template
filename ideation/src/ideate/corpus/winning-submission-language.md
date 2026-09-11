@@ -14,21 +14,30 @@ projects beside them are whatever fell there rather than a fair draw from the ot
 hundred — but it is outcome-labelled from a single event, which makes it better evidence about
 positioning than any amount of advice.
 
-## The dominant theme was AI that stops
+## The dominant theme was AI that stops — and it did NOT separate winners from losers
 
 Seven of the fourteen winners are about constraining or proving an AI system rather than
 extending its autonomy. AegisFlow: "the AI does the four hours of investigation, then stops. A
 human keeps the pen." Chancery: "Power of attorney for AI agents... every irreversible act is
 checked against that signed document and refused, out loud, with the clause it broke." DealForge
 separates "AI interpretation from commercial authority, human approval". Time-Out "refuses when
-the evidence isn't there". Signet, DomainTwin and PantryProof all sell verification: a signature
-you can check, a deterministic proof of recovery, a replayable evidence packet.
+the evidence isn't there". Signet, DomainTwin and PantryProof all sell verification.
 
-At an AI hackathon, in other words, the winning move was largely *restraint made legible*. This
-is worth holding loosely — one event, and the sponsors' own tooling shapes what gets built — but
-it inverts the obvious instinct, which is to demonstrate the most autonomous agent you can. A
-room full of autonomous agents makes the one that refuses distinctive, and refusal is easy to
-demo: you can *show* a system declining and naming the clause it broke.
+**Then check the projects that did not win.** Five of the ten use the same language: Claim Ready
+"proves every euro", DealProof "AI can draft the deal. DealProof proves it", Countersign "the
+agent proposes, the human countersigns", Mandate Inbox "stops the ones with wrong totals",
+fellowagent on eSign envelopes. That is 50% of winners and 50% of non-winners — identical.
+
+So restraint-made-legible was the theme of the *event*, not the edge of the *winners*. An earlier
+version of this document drew the opposite conclusion by reading only the winners' column, which
+is the base-rate error in its purest form: every frequent pattern looks like a cause until you
+count how often it shows up in the failures too. Building toward "an AI that refuses" because this
+gallery is full of them buys nothing except a crowded field, and a crowded field is what AegisFlow
+won by betting *against*.
+
+What survives the check is narrower and duller: winners were more concrete, not more restrained.
+See `docs/METRIC.md` for the measured per-feature separation and how little of it is real at this
+sample size.
 
 ## Winners named a mechanism you could go and check
 
