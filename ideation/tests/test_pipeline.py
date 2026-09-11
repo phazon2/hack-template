@@ -45,6 +45,10 @@ def e2e(tmp_path_factory):
         runs_dir=str(root / "runs"),
         receipts_dir=str(root / "receipts"),
         meta_path=str(root / "meta.jsonl"),
+        # Isolated too: these default to the repo's own .ideate/, which now carries
+        # committed corpus material, and a test must never read it.
+        fetched_dir=str(root / "fetched"),
+        charter_path=str(root / "charter.md"),
     )
     system = IdeationSystem(settings, llm=MockLLM(seed=0), now=fixed_now)
     return settings, system, system.ideate(THEME, HackathonConstraints())

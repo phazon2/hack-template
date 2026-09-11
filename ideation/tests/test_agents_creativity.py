@@ -14,9 +14,11 @@ from ideate.agents.creativity import (
     idea_schema,
     jaccard,
     simple_tokens,
+    technique_lines,
     validate_idea,
     winner_examples_block,
 )
+from ideate.agents.creativity import ORDINARY_PERSONAS
 from ideate.evaluation.pairwise import references_from_corpus
 from ideate.config import Settings
 from ideate.evaluation.rubric import DEFAULT_RUBRIC
@@ -99,6 +101,34 @@ def test_must_avoid_matches_stemmed_tokens_and_phrases():
     assert validate_idea(good_idea(title="Chatbots for wardens"), c) == ["uses must-avoid term 'chatbot'"]
     assert validate_idea(good_idea(description="an assistant with voice input"), c) == ["uses must-avoid term 'voice assistant'"]
     assert validate_idea(good_idea(description="a voice memo"), c) == []
+
+
+# --------------------------------------------------------------------------- ordinary personas
+def test_each_slot_gets_an_ordinary_persona_lens():
+    lines = technique_lines(3).splitlines()
+    assert len(lines) == 3
+    assert all("seen through:" in line for line in lines)
+    # Distinct personas across slots: one repeated lens samples one region, which is the failure.
+    lenses = [line.split("seen through:")[1].strip() for line in lines]
+    assert len(set(lenses)) == 3
+
+
+def test_personas_are_ordinary_not_visionary():
+    """arXiv 2602.20408 measured 'creative entrepreneur' personas as WORSE than ordinary ones."""
+    import re as _re
+
+    blob = " ".join(ORDINARY_PERSONAS).lower()
+    # Word boundaries: "quoting jobs from a van" is an ordinary plumber, not Steve Jobs.
+    for archetype in ("founder", "entrepreneur", "visionary", "inventor", "ceo", "steve jobs", "musk", "genius"):
+        assert not _re.search(rf"\b{archetype}\b", blob), archetype
+    assert len(set(ORDINARY_PERSONAS)) == len(ORDINARY_PERSONAS)
+
+
+def test_prompt_says_the_persona_is_a_lens_not_the_customer(kb, tmp_path):
+    ctx = make_ctx(kb, tmp_path)
+    prompt = creativity_prompt(prepared_state(ctx), 3, [], [], [])
+    assert "a lens, not a customer" in prompt
+    assert "target_user may be someone else entirely" in prompt
 
 
 # --------------------------------------------------------------------------- chain of thought

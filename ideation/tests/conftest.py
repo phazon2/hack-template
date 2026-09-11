@@ -25,6 +25,10 @@ def settings(tmp_path):
         runs_dir=str(tmp_path / "runs"),
         receipts_dir=str(tmp_path / "receipts"),
         meta_path=str(tmp_path / "meta.jsonl"),
+        # Isolated too: these default to the repo's own .ideate/, which now carries
+        # committed corpus material, and a test must never read it.
+        fetched_dir=str(tmp_path / "fetched"),
+        charter_path=str(tmp_path / "charter.md"),
     )
 
 

@@ -44,6 +44,24 @@ TECHNIQUE_HINTS: dict[str, str] = {
     "direct": "solve the most painful named problem in the theme head-on, no twist required",
 }
 
+# Deliberately ordinary and deliberately unrelated to each other: each one is a sampling cue that
+# pulls generation into a different region of the knowledge space (arXiv 2602.20408). No founders,
+# no inventors, no "visionary" anything — that is the variant the paper measured as WORSE.
+ORDINARY_PERSONAS: tuple[str, ...] = (
+    "a night-shift nurse on a hospital ward",
+    "a delivery driver working a dense city route",
+    "a school caretaker who opens the building at 6am",
+    "a small-town pharmacist who knows every regular",
+    "a warehouse picker paid by the item",
+    "a farm vet driving between calls",
+    "a municipal clerk processing permit applications",
+    "a hotel housekeeper on a tight room quota",
+    "a bus depot dispatcher covering sick calls",
+    "a fishing boat skipper reading the weather",
+    "a primary school teacher marking at the kitchen table",
+    "a plumber quoting jobs from a van",
+)
+
 CREATIVITY_SYSTEM = (
     "You are the ideation lead of a hackathon team. You generate a batch of distinct, buildable "
     "project ideas, each produced with the ideation technique assigned to its slot. Every idea "
@@ -187,12 +205,26 @@ def diverse(candidates: list[Idea], earlier: list[Idea], threshold: float = DIVE
 
 # --------------------------------------------------------------------------- prompt
 def technique_lines(n: int, techniques: list[str] | None = None) -> str:
-    """One line per idea slot, cycling ``techniques`` (``TECHNIQUES`` when the strategy named none)."""
+    """One line per idea slot: an ideation technique and an ordinary persona to look through.
+
+    The persona is the second half of the diversity intervention. Deng, Brucks & Toubia
+    (arXiv 2602.20408) identify two separate mechanisms that flatten LLM idea pools: *fixation*,
+    where early outputs constrain later ones, and *knowledge aggregation*, where the model samples
+    from one merged distribution instead of the partitioned one a population of humans holds. They
+    fix the first with chain-of-thought and the second with personas — and they report that
+    ORDINARY personas beat "creative entrepreneur" ones like Steve Jobs, because a plain role
+    anchors generation in a distinct region of the semantic space while a visionary archetype
+    collapses back toward the same celebrated ideas. Combining both beat human idea pools.
+
+    So these are deliberately unremarkable jobs, spread across unrelated domains. Picking
+    impressive ones would undo the effect.
+    """
     cycle = list(techniques) if techniques else list(TECHNIQUES)
     lines = []
     for k in range(n):
         technique = cycle[k % len(cycle)]
-        lines.append(f"- idea {k + 1}: technique={technique} ({TECHNIQUE_HINTS[technique]})")
+        persona = ORDINARY_PERSONAS[k % len(ORDINARY_PERSONAS)]
+        lines.append(f"- idea {k + 1}: technique={technique} ({TECHNIQUE_HINTS[technique]}); seen through: {persona}")
     return "\n".join(lines)
 
 
@@ -273,6 +305,12 @@ def creativity_prompt(
             f"{knowledge_block(antipatterns) or '(none retrieved)'}"
         ),
         f"Knowledge snippets ({len(shown)}):\n\n{knowledge_block(shown)}",
+        (
+            "The persona on each slot is a lens, not a customer: look at the theme through the "
+            "ordinary working life of that person and notice what they would notice. The idea's "
+            "target_user may be someone else entirely. Do not write ideas ABOUT these jobs unless "
+            "the theme genuinely leads there, and do not swap them for founders or visionaries."
+        ),
         (
             f"Before writing any idea, fill distinct_angles with exactly {n} entries, one per slot, "
             "in slot order. Each names the specific person in the specific situation that slot will "
